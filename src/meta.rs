@@ -1,6 +1,9 @@
 use fancy_regex::Regex;
 use serde::Serialize;
 
+pub const META_TOKEN: &str = "#meta";
+pub const META_PARAM_TOKEN: &str = "#meta_param";
+
 #[derive(Serialize, Clone)]
 pub struct MetaValue {
     pub is_persistent: bool,

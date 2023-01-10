@@ -5,7 +5,7 @@ use serde::Serialize;
 use crate::lexer::{
     CEnum, CFunction, CIdentifier, CStruct, CType, CVariableDeclaration, HeaderFile,
 };
-use crate::meta::MetaValue;
+use crate::meta::{MetaValue, META_PARAM_TOKEN, META_TOKEN};
 
 #[derive(Serialize)]
 struct Data<'a> {
@@ -172,9 +172,11 @@ impl From<&CFunction> for CSharpFunction {
         let mut params: Vec<CSharpVariable> = vec![];
         let mut param2meta: HashMap<String, MetaValue> = HashMap::new();
         if let Some(cmt) = &src.comment {
-            let mut iter = cmt.split('\n').skip_while(|&x| !x.contains("#meta_param"));
+            let mut iter = cmt
+                .split('\n')
+                .skip_while(|&x| !x.contains(META_PARAM_TOKEN));
             while let Some(c) = iter.next() {
-                if !c.contains("#meta_param") {
+                if !c.contains(META_PARAM_TOKEN) {
                     continue;
                 }
                 let items: Vec<&str> = c.split(';').collect();
@@ -341,7 +343,7 @@ fn transform_comment(cmt: Option<String>) -> Option<String> {
     if let Some(c) = cmt {
         let mut cmts: Vec<String> = vec![];
         for split in c.split("\n").map(|f| f.trim()) {
-            if split.contains("#meta") {
+            if split.contains(META_TOKEN) {
                 continue;
             }
             let mut s: String = "".into();

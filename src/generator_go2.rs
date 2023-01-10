@@ -12,7 +12,7 @@ use crate::{
         CEnum, CFunction, CIdentifier, CStruct, CType, CVariableDeclaration, CVariableType,
         HeaderFile,
     },
-    meta::MetaValue,
+    meta::{META_PARAM_TOKEN, META_TOKEN, MetaValue},
 };
 
 const FIELD_PTR: &'static str = "ptr";
@@ -178,7 +178,7 @@ impl GoComment {
                 }
                 l.trim().to_owned()
             })
-            .filter(|line| !line.contains("#meta") && line != "//")
+            .filter(|line| !line.contains(META_TOKEN) && line != "//")
             .collect::<Vec<String>>();
 
         return GoComment {
@@ -588,9 +588,11 @@ impl GoFunction {
         // let param2meta: HashMap<String, Option<&MetaValue>> = HashMap::new();
         let mut param2meta: HashMap<String, MetaValue> = HashMap::new();
         if let Some(cmt) = &c.comment {
-            let mut iter = cmt.split('\n').skip_while(|&x| !x.contains("#meta_param"));
+            let mut iter = cmt
+                .split('\n')
+                .skip_while(|&x| !x.contains(META_PARAM_TOKEN));
             while let Some(c) = iter.next() {
-                if !c.contains("#meta_param") {
+                if !c.contains(META_PARAM_TOKEN) {
                     continue;
                 }
                 let items: Vec<&str> = c.split(';').collect();
