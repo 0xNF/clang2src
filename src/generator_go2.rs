@@ -1,3 +1,4 @@
+// see also: https://gist.github.com/tosone/2e4120e7d28fd1c42adfb2ab12ab5bb5
 use std::{collections::HashMap, fmt};
 
 use serde::{
@@ -12,13 +13,15 @@ use crate::{
         CEnum, CFunction, CIdentifier, CStruct, CType, CVariableDeclaration, CVariableType,
         HeaderFile,
     },
-    meta::{META_PARAM_TOKEN, META_TOKEN, MetaValue},
+    meta::{MetaValue, META_PARAM_TOKEN, META_TOKEN},
 };
 
 const FIELD_PTR: &'static str = "ptr";
 const FIELD_SELF: &'static str = "_obj";
 const C_PREFACE: &'static str = "c_";
 const C_STRUCT_PREFACE: &'static str = "C.struct_";
+const C_ENUM_PREFACE: &'static str = "C.enum_";
+const C_UNION_PREFACE: &'static str = "C.union_";
 
 #[derive(Clone)]
 enum GoTypeBasic {
@@ -116,14 +119,14 @@ impl GoTypeBasic {
     fn make_c_value(&self, val: &str) -> String {
         match &self {
             GoTypeBasic::Int => format!("int32({})", val),
-            GoTypeBasic::Int8 => format!("byte({})", val),
-            GoTypeBasic::Int16 => format!("int16({})", val),
-            GoTypeBasic::Int32 => format!("int32({})", val),
+            GoTypeBasic::Int8 => format!("C.schar({})", val),
+            GoTypeBasic::Int16 => format!("C.short({})", val),
+            GoTypeBasic::Int32 => format!("C.long({})", val),
             GoTypeBasic::Int64 => format!("C.longlong({})", val),
-            GoTypeBasic::Uint => format!("uint32({})", val),
-            GoTypeBasic::Uint8 => format!("byte({})", val),
-            GoTypeBasic::Uint16 => format!("uint16({})", val),
-            GoTypeBasic::Uint32 => format!("uint32({})", val),
+            GoTypeBasic::Uint => format!("C.uint({})", val),
+            GoTypeBasic::Uint8 => format!("C.uchar({})", val),
+            GoTypeBasic::Uint16 => format!("C.ushort({})", val),
+            GoTypeBasic::Uint32 => format!("C.ulong({})", val),
             GoTypeBasic::Uint64 => format!("C.ulonglong({})", val),
             GoTypeBasic::Uintptr => format!("C.ulonglong({})", val),
             GoTypeBasic::Bool => match val.to_lowercase().as_str() {
@@ -133,7 +136,7 @@ impl GoTypeBasic {
             }
             .to_owned(),
             GoTypeBasic::String => format!("C.CString({})", val),
-            GoTypeBasic::Byte => format!("byte({})", val),
+            GoTypeBasic::Byte => format!("C.char({})", val),
             GoTypeBasic::Rune => format!("C.CString({})", val),
             GoTypeBasic::Float32 => format!("C.float({})", val),
             GoTypeBasic::Float64 => format!("C.double({})", val),
