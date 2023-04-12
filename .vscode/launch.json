@@ -1,0 +1,87 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Generate Dart",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=clang2src",
+                    "--package=clang2src"
+                ],
+                "filter": {
+                    "name": "clang2src",
+                    "kind": "bin"
+                }
+            },
+            "args": [
+                "tests/test_file.h",
+                "dart",
+                "libs",
+                "liboauthtool",
+            ],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'clang2src'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=clang2src",
+                    "--package=clang2src"
+                ],
+                "filter": {
+                    "name": "clang2src",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'clang2src'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=clang2src",
+                    "--package=clang2src"
+                ],
+                "filter": {
+                    "name": "clang2src",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug integration test 'integration_tests'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--test=integration_tests",
+                    "--package=clang2src"
+                ],
+                "filter": {
+                    "name": "integration_tests",
+                    "kind": "test"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
