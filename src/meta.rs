@@ -52,7 +52,7 @@ impl MetaValue {
         }
     }
 
-    pub fn from_meta_comment_dontcare(cmt: Option<String>) -> Self {
+    pub fn from_meta_comment_dontcare(cmt: &Option<String>) -> Self {
         if let Some(c) = cmt {
             for s in c.split('\n') {
                 if s.contains("#meta:") {

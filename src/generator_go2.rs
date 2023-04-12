@@ -407,7 +407,7 @@ impl From<&CVariableType> for GoType {
 }
 impl From<&CVariableDeclaration> for GoType {
     fn from(c: &CVariableDeclaration) -> Self {
-        let meta: MetaValue = MetaValue::from_meta_comment_dontcare(c.comment.to_owned());
+        let meta: MetaValue = MetaValue::from_meta_comment_dontcare(&c.comment);
         GoType::_from(c, &meta)
     }
 }
@@ -541,8 +541,7 @@ impl GoFunction {
     }
 
     fn from_cfunc(all_enums: &Vec<GoEnum>, all_structs: &mut Vec<GoStruct>, c: &CFunction) -> Self {
-        let function_meta_values: MetaValue =
-            MetaValue::from_meta_comment_dontcare(c.comment.to_owned());
+        let function_meta_values: MetaValue = MetaValue::from_meta_comment_dontcare(&c.comment);
 
         let mut identifier = GoIdentifier::new(&c.label, None);
 
@@ -698,7 +697,7 @@ impl From<&CStruct> for GoStruct {
             None => None,
         };
 
-        let meta: MetaValue = MetaValue::from_meta_comment_dontcare(c.comment.to_owned());
+        let meta: MetaValue = MetaValue::from_meta_comment_dontcare(&c.comment);
 
         let mut fields: Vec<GoField> =
             c.declarations
@@ -729,7 +728,7 @@ impl From<&CStruct> for GoStruct {
                 as_c_field: format!("{}{}", FIELD_SELF, FIELD_PTR),
                 from_c_field: "TOFO(NF, IS_PERSISTENT)".to_owned(),
                 go_comment: Some(GoComment::new("// reference to C pointer")),
-                meta: MetaValue::from_meta_comment_dontcare(None),
+                meta: MetaValue::from_meta_comment_dontcare(&None),
                 identifier: GoIdentifier {
                     go_label: FIELD_PTR.to_owned(),
                     go_comment: None,
@@ -775,7 +774,7 @@ struct GoEnum {
 }
 impl From<&CEnum> for GoEnum {
     fn from(c: &CEnum) -> Self {
-        let meta: MetaValue = MetaValue::from_meta_comment_dontcare(c.comment.to_owned());
+        let meta: MetaValue = MetaValue::from_meta_comment_dontcare(&c.comment);
 
         let identifier = GoIdentifier::new(&c.identifier.label, None);
         let comment = match &c.comment {
@@ -912,7 +911,7 @@ impl From<&CVariableDeclaration> for GoField {
     fn from(c: &CVariableDeclaration) -> Self {
         let go_type = GoType::from(c);
         let go_identifier = GoIdentifier::new(&c.label, None);
-        let meta_value = MetaValue::from_meta_comment_dontcare(c.comment.to_owned());
+        let meta_value = MetaValue::from_meta_comment_dontcare(&c.comment);
         GoField {
             identifier: go_identifier,
             c_identifier: CIdentifier::new(&c.label, None),
@@ -1177,7 +1176,7 @@ const TEMPLATE_GENERATED_HEADER: &'static str = "
 // DO NOT MODIFY THIS FILE
 // This file contains automatically generated Go Bindings.
 // It was generated via the clang2src project, and ultimately comes from a set of annotated Rust source files
-// Any modifications you make tos this file will be reverted whenever this file is regenerated
+// Any modifications you make to this file will be reverted whenever this file is regenerated
 ";
 
 const TEMPLATE_GO_HEADER: &'static str = "

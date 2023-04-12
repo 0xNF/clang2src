@@ -1,4 +1,5 @@
 pub mod generator_csharp;
+pub mod generator_dart;
 pub mod generator_go2;
 pub mod lexer;
 pub mod meta;
@@ -39,6 +40,14 @@ fn main() {
                     return;
                 };
             }
+            println!("{}", &res);
+        }
+
+        SubCommand::Dart {
+            library_path,
+            library_name,
+        } => {
+            let res = generator_dart::generate(header, &library_path, &library_name);
             println!("{}", &res);
         }
     }
@@ -143,5 +152,12 @@ pub enum SubCommand {
         ld_flags: String,
         /// header file location relative to the building location of the go binary
         header_file_location: String,
+    },
+
+    Dart {
+        /// Location of the folder containing DLLs/SO files
+        library_path: String,
+        /// Name of the lib file, without the extension
+        library_name: String,
     },
 }
