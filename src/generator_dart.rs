@@ -22,7 +22,8 @@ struct Data<'a> {
     usings: Vec<&'a str>,
     enums: Vec<DartEnum>,
     ffi_structs: Vec<DartFFIStruct>,
-    // constants: Vec<DartVariable>,
+    ffi_functions: Vec<DartFunction>,
+    constants: Vec<DartVariable>,
     // enums: Vec<CSharpEnum>,
     // structs: Vec<CSharpStruct>,
     // functions: Vec<CSharpFunction>,
@@ -36,14 +37,27 @@ impl<'a> Data<'a> {
         usings: Vec<&'a str>,
     ) -> Self {
         let enums: Vec<DartEnum> = header.enums.iter().map(DartEnum::from).collect();
+
         let ffi_structs: Vec<DartFFIStruct> =
             header.structs.iter().map(DartFFIStruct::from).collect();
+
+        let constants: Vec<DartVariable> = header
+            .defines
+            .iter()
+            .map(|v| DartVariable::from(v, false))
+            .collect();
+
+        let ffi_functions: Vec<DartFunction> =
+            header.functions.iter().map(DartFunction::from).collect();
+
         Data {
             library_path,
             library_name,
             usings,
             enums,
             ffi_structs,
+            constants,
+            ffi_functions,
         }
     }
 
@@ -59,6 +73,8 @@ impl<'a> Data<'a> {
         context.insert("usings", &self.usings);
         context.insert("enums", &self.enums);
         context.insert("ffi_structs", &self.ffi_structs);
+        context.insert("ffi_functions", &self.ffi_functions);
+        context.insert("constants", &self.constants);
 
         context
     }
@@ -160,6 +176,10 @@ impl Display for DartIdentifier {
 }
 
 impl DartIdentifier {
+    fn make_label_for_constant(label: &str) -> String {
+        label.to_uppercase()
+    }
+
     /// Ensures that the label for this type starts with a capital
     fn make_label_for_custom_type(label: &str) -> String {
         let mut l = DartIdentifier::transform_label(label);
@@ -221,6 +241,20 @@ impl DartIdentifier {
             dart_comment,
         };
     }
+
+    fn new_for_constant(label: &str, comment: Option<String>) -> Self {
+        return DartIdentifier {
+            dart_label: DartIdentifier::make_label_for_constant(label),
+            dart_comment: comment.map(DartComment::from),
+        };
+    }
+
+    fn new_for_custom_type(label: &str, comment: Option<String>) -> Self {
+        return DartIdentifier {
+            dart_label: Self::make_label_for_custom_type(label),
+            dart_comment: comment.map(DartComment::from),
+        };
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -228,13 +262,11 @@ struct DartEnum {
     name: String,
     values: Vec<DartEnumOption>,
     dart_comment: Option<DartComment>,
-    meta: MetaValue,
+    meta: Option<MetaValue>,
 }
 
 impl From<&CEnum> for DartEnum {
     fn from(c: &CEnum) -> Self {
-        let meta: MetaValue = MetaValue::from_meta_comment_dontcare(&c.comment);
-
         let enum_name = DartIdentifier::make_label_for_custom_type(&c.identifier.label);
         let dart_comment = c.comment.to_owned().map(DartComment::from);
 
@@ -249,7 +281,7 @@ impl From<&CEnum> for DartEnum {
             name: enum_name,
             dart_comment,
             values,
-            meta,
+            meta: c.meta.as_ref().map(|meta| meta.clone()),
         }
     }
 }
@@ -297,18 +329,115 @@ struct DartField {
 }
 
 /// A parameter, as in an argument to a function
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 struct DartParameter {}
 
+impl From<&CVariableDeclaration> for DartParameter {
+    fn from(c: &CVariableDeclaration) -> Self {
+        todo!()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DartValue {
+    value: String,
+}
+
+impl DartValue {
+    fn new(value: &str) -> Self {
+        DartValue {
+            value: value.to_owned(),
+        }
+    }
+}
+
+impl Serialize for DartValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.value)
+    }
+}
+
+impl From<&CType> for DartValue {
+    fn from(c: &CType) -> Self {
+        match &c {
+            CType::Enum(v) => DartValue::new(&format!(
+                "{}()",
+                &DartIdentifier::make_label_for_custom_type(v.identifier.label.as_str())
+            )),
+            CType::Struct(v) => DartValue::new(&format!(
+                "{}()",
+                &DartIdentifier::make_label_for_custom_type(v.identifier.label.as_str())
+            )),
+
+            CType::Include(_) | CType::UNINITIALIZED => {
+                panic!("Cannot make DartValue for CType: {}", c)
+            }
+            CType::SignedShort(v) => DartValue::new(&v.to_string()),
+            CType::UnsignedShort(v) => DartValue::new(&v.to_string()),
+            CType::SignedInteger(v) => DartValue::new(&v.to_string()),
+            CType::UnsignedInteger(v) => DartValue::new(&v.to_string()),
+            CType::SignedLong(v) => DartValue::new(&v.to_string()),
+            CType::UnsignedLong(v) => DartValue::new(&v.to_string()),
+            CType::Int64T(v) => DartValue::new(&v.to_string()),
+            CType::Float(v) => DartValue::new(&v.to_string()),
+            CType::Double(v) => DartValue::new(&v.to_string()),
+            CType::DoubleDouble(v) => DartValue::new(&v.to_string()),
+            CType::Char(v) => DartValue::new(&format!("'{}'", v.to_string())),
+            CType::Function(v) => DartValue::new(v.label.as_str()),
+            CType::Define(label, typeval) => DartValue::from(&**typeval),
+            CType::IntPtrT(v) => DartValue::new(&v.to_string()),
+            CType::UIntPtrT(v) => DartValue::new(&v.to_string()),
+            CType::Int8T(v) => DartValue::new(&v.to_string()),
+            CType::Int16T(v) => DartValue::new(&v.to_string()),
+            CType::Int32T(v) => DartValue::new(&v.to_string()),
+            CType::UInt8T(v) => DartValue::new(&v.to_string()),
+            CType::UInt16T(v) => DartValue::new(&v.to_string()),
+            CType::UInt32T(v) => DartValue::new(&v.to_string()),
+            CType::UInt64T(v) => DartValue::new(&v.to_string()),
+            CType::VoidStar => DartValue::new("null"),
+            CType::Void => DartValue::new("void"),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 struct DartVariable {
-    label: String,
+    identifier: DartIdentifier,
     c_comment: Option<String>,
-    dart_comment: Option<String>,
-    // value: Option<DataValue>,
-    data_type: DartNativeDataType,
+    dart_comment: Option<DartComment>,
+    value: Option<DartValue>,
+    data_type: DartDataType,
     pointer_count: u8,
     is_last: bool,
     meta: MetaValue,
+}
+
+impl DartVariable {
+    fn from(c: &CVariableDeclaration, as_ffi: bool) -> Self {
+        let identifier = DartIdentifier::new_for_constant(&c.label, None);
+
+        let ddt = if as_ffi {
+            DartDataType::FFIType(DartFFIDataType::from(&c.variable_type))
+        } else {
+            DartDataType::NativeType(DartNativeDataType::from(c))
+        };
+
+        let value = DartValue::from(&c.variable_type.kind);
+
+        DartVariable {
+            identifier,
+            dart_comment: c.comment.clone().map(DartComment::from),
+            c_comment: c.comment.clone(),
+            data_type: ddt,
+            pointer_count: c.variable_type.pointer_count,
+            is_last: false,
+            meta: MetaValue::new(),
+            value: Some(value),
+        }
+    }
 }
 
 impl Display for DartVariable {
@@ -319,6 +448,63 @@ impl Display for DartVariable {
         }
 
         f.write_fmt(format_args!("{}{}", self.data_type, stars))
+    }
+}
+
+#[derive(Serialize, Debug)]
+struct DartFunction {
+    /// Whether this function should be attached to a class
+    on_class: Option<DartIdentifier>,
+    /// Dart friendly label for this function
+    identifier: DartIdentifier,
+    /// Underlying C function name for this function (only for direct-from-c funtions)
+    c_function_name: Option<String>,
+    /// Dart friendly comment for this function (stripped of #meta)
+    dart_comment: Option<DartComment>,
+    /// Whether this function returns `void`
+    is_void: bool,
+
+    /// Whether this function is of the form `Future<T> xyz() async`
+    is_async: bool,
+
+    /// Inputs to this function
+    parameters: Vec<DartParameter>,
+
+    /// #meta values for determining serialization stuff
+    meta: Option<MetaValue>,
+
+    /// Dart friendly return value. For FFI functions, may return Pointer<xyz> or C_{Element_Name}
+    return_type: DartDataType,
+
+    /// Whether this function returns a C_{Struct}
+    is_return_struct: bool,
+
+    /// Whether this function needs additional helper functions in the form of `_{func}Ptr = _lookup...` and `_{func}` = _{func}Ptr.asFunction...`
+    requires_ffi_function_pointers: bool,
+}
+
+impl From<&CFunction> for DartFunction {
+    fn from(c: &CFunction) -> Self {
+        let return_is_ffi = c.return_type.is_struct || c.return_type.pointer_count > 0;
+        let return_type = if return_is_ffi {
+            DartDataType::FFIType(DartFFIDataType::from(&c.return_type.kind))
+        } else {
+            DartDataType::NativeType(DartNativeDataType::from(&c.return_type.kind))
+        };
+
+        DartFunction {
+            on_class: None,
+            identifier: DartIdentifier::new(c.label.as_str(), None),
+            c_function_name: Some(c.label.to_owned()),
+            dart_comment: c.comment.to_owned().map(DartComment::from),
+            is_void: matches!(c.return_type.kind, CType::Void),
+            is_async: false,
+            parameters: c.parameters.iter().map(DartParameter::from).collect(),
+            meta: c.meta.as_ref().map(|meta| meta.clone()),
+            return_type,
+            is_return_struct: c.return_type.is_struct,
+            requires_ffi_function_pointers: true, // always true here because we are From'ing from a CFunction
+        }
     }
 }
 
@@ -417,8 +603,8 @@ impl From<&CType> for DartFFIDataType {
             | CType::UNINITIALIZED => {
                 panic!("Cannot create a Dart FFI Type from this ctype: {}", c)
             }
-            CType::Struct(c) => DartFFIDataType::Struct(DartIdentifier::new(
-                &DartIdentifier::make_label_for_custom_type(&c.identifier.label),
+            CType::Struct(c) => DartFFIDataType::Struct(DartIdentifier::new_for_custom_type(
+                &c.identifier.label,
                 None,
             )),
             CType::SignedShort(_) | CType::Int8T(_) => DartFFIDataType::Int8,
@@ -530,7 +716,45 @@ enum DartNativeDataType {
         key_type: Box<DartNativeDataType>,
         value_type: Box<DartNativeDataType>,
     },
+    Void,
 }
+
+impl From<&CVariableDeclaration> for DartNativeDataType {
+    fn from(c: &CVariableDeclaration) -> Self {
+        match &c.meta {
+            None => DartNativeDataType::from(&c.variable_type.kind),
+            Some(meta_value) => {
+                if meta_value.is_datetime {
+                    DartNativeDataType::DateTime
+                } else if meta_value.is_duration {
+                    DartNativeDataType::Duration
+                } else if meta_value.is_hashmap {
+                    DartNativeDataType::Map {
+                        key_type: Box::new(DartNativeDataType::String),
+                        value_type: Box::new(DartNativeDataType::String),
+                    }
+                } else if meta_value.is_list {
+                    DartNativeDataType::List {
+                        sub_type: Box::new(DartNativeDataType::String),
+                    }
+                } else if meta_value.is_string {
+                    DartNativeDataType::String
+                } else if (meta_value.is_timestamp) {
+                    DartNativeDataType::DateTime
+                } else if meta_value.is_url {
+                    DartNativeDataType::Uri
+                } else {
+                    panic!(
+                        "No known dart native type for this CVariableType: {}",
+                        c.variable_type
+                    )
+                }
+            }
+        }
+    }
+}
+
+impl DartNativeDataType {}
 
 impl Serialize for DartNativeDataType {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -599,14 +823,34 @@ impl Display for DartNativeDataType {
                 key_type,
                 value_type,
             } => f.write_fmt(format_args!("Map<{}, {}>", key_type, value_type)),
+            DartNativeDataType::Void => f.write_str("void"),
         }
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 enum DartDataType {
     NativeType(DartNativeDataType),
     FFIType(DartFFIDataType),
+}
+
+impl DartDataType {
+    fn from(cvariable: &CVariableType, meta: Option<&MetaValue>) -> Self {
+        let meta_value = meta.map_or(meta.unwrap().clone(), |_| MetaValue::new());
+        todo!()
+    }
+}
+
+impl Display for DartDataType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "{}",
+            match &self {
+                DartDataType::NativeType(data_type) => data_type.to_string(),
+                DartDataType::FFIType(data_type) => data_type.to_string(),
+            }
+        ))
+    }
 }
 
 impl Serialize for DartDataType {
@@ -649,8 +893,10 @@ pub fn generate(header: HeaderFile, library_path: &str, library_name: &str) -> S
         ("generated_header", TEMPLATE_GENERATED_HEADER),
         ("dart_header", TEMPLATE_DART_HEADER),
         ("c_constants", TEMPLATE_C_CONSTANTS),
+        ("dart_constants", TEMPLATE_DART_CONSTANTS),
         ("dart_enums", TEMPLATE_DART_ENUMS),
         ("dart_ffi_structs", TEMPLATE_FFI_STRUCTS),
+        ("dart_ffi_functions", TEMPLATE_FFI_FUNCTIONS),
         ("utilities", TEMPLATE_UTILITY_FUNCTIONS),
     ];
 
@@ -687,6 +933,16 @@ const int C_TRUE = 1;
 const int C_FALSE = 0;
 ";
 
+const TEMPLATE_DART_CONSTANTS: &str = "
+/// Region: Dart Constants
+{% if constants | length %}
+{% for constant in constants %}
+{% if constant.dart_comment is some %}{{ constant.dart_comment }}{% endif %}
+const {{ constant.data_type }} {{ constant.identifier.dart_label }} = {{ constant.value }};
+{% endfor %}
+{% endif %}
+";
+
 const TEMPLATE_FFI_STRUCTS: &str = "
 {% if ffi_structs | length %}
 {% for ffi_struct in ffi_structs %}
@@ -695,7 +951,7 @@ class {{ ffi_struct.label }} extends {% if ffi_struct.is_opaque %}ffi.Opaque{% e
     {% if field.comment is some %}{{ field.comment }}{% endif %}
     {% for annotation in field.annotations %}{{ annotation }}
     {% endfor %}
-    {% for modifier in field.modifiers %} {{ modifier }} {% endfor %}{{field.kind}} {{field.identifier.dart_label}}
+    {% for modifier in field.modifiers %} {{ modifier }} {% endfor %}{{field.kind}} {{field.identifier.dart_label}};
     {% endfor %}
 }
 {% endfor %}
@@ -719,6 +975,15 @@ enum {{ enum.name }} {
     const {{enum.name}}(this.value);
 }
 {% endfor %}
+{% endif %}
+";
+
+const TEMPLATE_FFI_FUNCTIONS: &str = "
+{% block title %}{% endblock %}
+{% if ffi_functions | length %}
+{% for ffi_function in ffi_functions %}
+let xyz = \"FUNCTIONS DAWG lmao\";
+{% endif %}
 {% endif %}
 ";
 

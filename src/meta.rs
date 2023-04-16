@@ -1,10 +1,12 @@
+use std::str::FromStr;
+
 use fancy_regex::Regex;
 use serde::Serialize;
 
-pub const META_TOKEN: &str = "#meta";
-pub const META_PARAM_TOKEN: &str = "#meta_param";
+pub const META_TOKEN: &str = "#meta:";
+pub const META_PARAM_TOKEN: &str = "#meta_param:";
 
-#[derive(Serialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct MetaValue {
     pub is_persistent: bool,
     pub for_struct: bool,
@@ -52,10 +54,94 @@ impl MetaValue {
         }
     }
 
+    pub fn from_meta_comment_for_param(cmt: &Option<String>, param_name: &str) -> Self {
+        if let Some(c) = cmt {
+            // This matcher is of the form `#meta_param: <name>;`, e..g,  #meta_param: encrypted;`
+            let match_param_str = format!("{} {};", META_PARAM_TOKEN, param_name);
+            let ls: Vec<&str> = c
+                .split("\n")
+                .filter(|l| l.contains(&match_param_str))
+                .collect();
+
+            let pseudo_comment = ls.join("\n");
+
+            let meta_matcher = Regex::new(r"(\w+(?:\(\w+\))?);").unwrap();
+            let mut meta = MetaValue::new();
+            let mut mm = meta_matcher.captures_iter(&pseudo_comment);
+            while let Some(cap) = mm.next() {
+                if let Ok(capture) = cap {
+                    let mut citer = capture.iter();
+                    while let Some(cc) = citer.next() {
+                        if let Some(match_value) = cc {
+                            let m = match_value.as_str().trim_end_matches(';');
+                            meta.modify_from_keyword(m);
+                        }
+                    }
+                }
+            }
+            meta
+        } else {
+            MetaValue::new()
+        }
+    }
+
+    /// Takes a meta value, and a meta_keyword and assigns the appropriate meta tag based on the keyword
+    fn modify_from_keyword(&mut self, m: &str) {
+        match m {
+            "persistent" => self.is_persistent = true,
+            "this" => self.is_this = true,
+            "for_struct" => self.for_struct = true,
+            "list" => self.is_list = true,
+            "nullable" => self.is_nullable = true,
+            "static" => self.is_static = true,
+            "throws" => self.throws = true,
+            "free" => self.is_destructor = true,
+            "constructor" => self.is_constructor = true,
+            "string" => self.is_string = true,
+            "hashmap" => self.is_hashmap = true,
+            "error" => self.is_error = true,
+            "duration" => self.is_duration = true,
+            "datetime" => self.is_datetime = true,
+            "output" => self.is_output = true,
+            "url" => self.is_url = true,
+            "timestamp" => self.is_timestamp = true,
+            _ => {
+                let compound_matcher = Regex::new(r"(\w+)\((\w+)\)").unwrap();
+                let c = compound_matcher.captures(m);
+                match c {
+                    Ok(cap) => match cap {
+                        Some(ccc) => {
+                            if ccc.len() == 3 {
+                                match ccc.get(1) {
+                                    Some(ccc_inner) => match ccc_inner.as_str() {
+                                        "length" => {
+                                            self.length_for =
+                                                Some(ccc.get(2).unwrap().as_str().to_string())
+                                        }
+                                        "capacity" => {
+                                            self.capacity_for =
+                                                Some(ccc.get(2).unwrap().as_str().to_string())
+                                        }
+                                        _ => (),
+                                    },
+                                    None => {
+                                        panic!("invalid inner(item) format in meta")
+                                    }
+                                }
+                            }
+                        }
+                        None => {}
+                    },
+                    Err(_) => {}
+                };
+            }
+        }
+    }
+
     pub fn from_meta_comment_dontcare(cmt: &Option<String>) -> Self {
         if let Some(c) = cmt {
             for s in c.split('\n') {
-                if s.contains("#meta:") {
+                if s.contains(META_TOKEN) || s.contains(META_PARAM_TOKEN) {
                     return MetaValue::from_meta_comment(s);
                 }
             }
@@ -64,8 +150,7 @@ impl MetaValue {
     }
 
     pub fn from_meta_comment(cmt: &str) -> Self {
-        let compound_matcher = Regex::new(r"(\w+)\((\w+)\)").unwrap();
-        let meta_matcher = Regex::new(r"(\w+(?:\(\w+\))?);").unwrap(); //Regex::new(r"(\w+);").unwrap();
+        let meta_matcher = Regex::new(r"(\w+(?:\(\w+\))?);").unwrap();
         let mut meta = MetaValue::new();
         let mut mm = meta_matcher.captures_iter(cmt);
         while let Some(cap) = mm.next() {
@@ -74,62 +159,7 @@ impl MetaValue {
                 while let Some(cc) = citer.next() {
                     if let Some(match_value) = cc {
                         let m = match_value.as_str().trim_end_matches(';');
-                        match m {
-                            "persistent" => meta.is_persistent = true,
-                            "this" => meta.is_this = true,
-                            "for_struct" => meta.for_struct = true,
-                            "list" => meta.is_list = true,
-                            "nullable" => meta.is_nullable = true,
-                            "static" => meta.is_static = true,
-                            "throws" => meta.throws = true,
-                            "free" => meta.is_destructor = true,
-                            "constructor" => meta.is_constructor = true,
-                            "string" => meta.is_string = true,
-                            "hashmap" => meta.is_hashmap = true,
-                            "error" => meta.is_error = true,
-                            "duration" => meta.is_duration = true,
-                            "datetime" => meta.is_datetime = true,
-                            "output" => meta.is_output = true,
-                            "url" => meta.is_url = true,
-                            "timestamp" => meta.is_timestamp = true,
-                            _ => {
-                                let c = compound_matcher.captures(m);
-                                match c {
-                                    Ok(cap) => match cap {
-                                        Some(ccc) => {
-                                            if ccc.len() == 3 {
-                                                match ccc.get(1) {
-                                                    Some(ccc_inner) => match ccc_inner.as_str() {
-                                                        "length" => {
-                                                            meta.length_for = Some(
-                                                                ccc.get(2)
-                                                                    .unwrap()
-                                                                    .as_str()
-                                                                    .to_string(),
-                                                            )
-                                                        }
-                                                        "capacity" => {
-                                                            meta.capacity_for = Some(
-                                                                ccc.get(2)
-                                                                    .unwrap()
-                                                                    .as_str()
-                                                                    .to_string(),
-                                                            )
-                                                        }
-                                                        _ => (),
-                                                    },
-                                                    None => {
-                                                        panic!("invalid inner(item) format in meta")
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        None => break,
-                                    },
-                                    Err(_) => break,
-                                };
-                            }
-                        }
+                        meta.modify_from_keyword(m);
                     }
                 }
             }

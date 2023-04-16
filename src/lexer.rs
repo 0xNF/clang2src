@@ -3,6 +3,8 @@ use std::{fmt, iter::Peekable, slice::Iter};
 use fancy_regex::Regex;
 use serde::Serialize;
 
+use crate::meta::MetaValue;
+
 const KEYWORD_STRUCT: &str = "struct";
 const KEYWORD_TYPEDEF: &str = "typedef";
 const KEYWORD_CONST: &str = "const";
@@ -36,6 +38,7 @@ impl From<Vec<CType>> for HeaderFile {
                 CType::Define(label, decl) => hf.defines.push(CVariableDeclaration {
                     label: label.to_owned(),
                     comment: None,
+                    meta: None,
                     is_const: true,
                     variable_type: CVariableType {
                         kind: *decl,
@@ -229,6 +232,7 @@ fn parse_enum(
                         label: label.to_owned(),
                         comment: None,
                     },
+                    meta: Some(MetaValue::from_meta_comment_dontcare(&comment)),
                     comment,
                     declarations,
                 }));
@@ -272,6 +276,7 @@ fn parse_struct(
                 label: label.to_owned(),
                 comment: None,
             },
+            meta: Some(MetaValue::from_meta_comment_dontcare(&comment)),
             comment,
             declarations: members,
         }));
@@ -292,6 +297,8 @@ fn parse_struct(
                         label: label.to_owned(),
                         comment: None,
                     },
+                    meta: Some(MetaValue::from_meta_comment_dontcare(&comment)),
+
                     comment,
                     declarations: members,
                 }));
@@ -313,6 +320,7 @@ fn parse_struct(
             label: label.to_owned(),
             comment: None,
         },
+        meta: Some(MetaValue::from_meta_comment_dontcare(&comment)),
         comment,
         declarations: members,
     };
@@ -352,6 +360,7 @@ fn parse_struct_member(
                 let variable_type =
                     match_variable_signature(signature, is_struct, is_enum, pointer_count)?;
                 let variable_decl = CVariableDeclaration {
+                    meta: Some(MetaValue::from_meta_comment_dontcare(&comment)),
                     comment: match &comment {
                         Some(cmt) => Some(cmt.to_owned()),
                         None => None,
@@ -412,6 +421,7 @@ fn match_variable_signature(
                             label: signature.first().unwrap().to_string(),
                             comment: None,
                         },
+                        meta: None,
                         comment: None,
                         declarations: vec![],
                     })
@@ -422,6 +432,7 @@ fn match_variable_signature(
                             label: signature.first().unwrap().to_string(),
                             comment: None,
                         },
+                        meta: None,
                         comment: None,
                         declarations: vec![],
                     })
@@ -518,6 +529,7 @@ fn parse_function(
                 return Ok(CType::Function(CFunction {
                     return_type: Box::new(return_type),
                     label: label.to_string(),
+                    meta: Some(MetaValue::from_meta_comment_dontcare(&comment)),
                     comment,
                     parameters,
                 }));
@@ -531,7 +543,7 @@ fn parse_function(
                 break;
             }
             _ => {
-                let param = parse_function_parameter(iter, current_comment)?;
+                let param = parse_function_parameter(iter, &comment)?;
                 if matches!(param.variable_type.kind, CType::Void) {
                     parameters.clear();
                 } else {
@@ -547,8 +559,9 @@ fn parse_function(
     let func: CFunction = CFunction {
         return_type: Box::new(return_type),
         label: label.to_string(),
+        meta: Some(MetaValue::from_meta_comment_dontcare(&comment)),
         comment,
-        parameters: parameters,
+        parameters,
     };
 
     Ok(CType::Function(func))
@@ -556,7 +569,7 @@ fn parse_function(
 
 fn parse_function_parameter(
     iter: &mut Peekable<Iter<ClangTokenType>>,
-    comment: Option<String>,
+    comment: &Option<String>,
 ) -> Result<CVariableDeclaration, String> {
     consume_whitespace(iter);
     let mut label: &str = "";
@@ -575,6 +588,7 @@ fn parse_function_parameter(
                     /* fyi(nf): dummy variable for void parameter functions */
                     return Ok(CVariableDeclaration {
                         comment: None,
+                        meta: None,
                         is_const: false,
                         label: "".to_owned(),
                         variable_type: CVariableType {
@@ -603,6 +617,7 @@ fn parse_function_parameter(
                 let variable_type =
                     match_variable_signature(signature, is_struct, is_enum, pointer_count)?;
                 let variable_decl = CVariableDeclaration {
+                    meta: Some(MetaValue::from_meta_comment_for_param(&comment, label)),
                     comment: match &comment {
                         Some(cmt) => Some(cmt.to_owned()),
                         None => None,
@@ -845,6 +860,7 @@ pub enum CType {
     Char(String),
     Struct(CStruct),
     Function(CFunction),
+    /// {Label, Type(value)}
     Define(String, Box<CType>),
     IntPtrT(i32),
     UIntPtrT(u32),
@@ -899,6 +915,7 @@ impl fmt::Display for CType {
 pub struct CEnum {
     pub identifier: CIdentifier,
     pub comment: Option<String>,
+    pub meta: Option<MetaValue>,
     pub declarations: Vec<CIdentifier>,
 }
 impl fmt::Display for CEnum {
@@ -911,6 +928,7 @@ impl fmt::Display for CEnum {
 pub struct CStruct {
     pub identifier: CIdentifier,
     pub comment: Option<String>,
+    pub meta: Option<MetaValue>,
     pub declarations: Vec<CVariableDeclaration>,
 }
 impl fmt::Display for CStruct {
@@ -955,6 +973,7 @@ pub struct CFunction {
     pub return_type: Box<CVariableType>,
     pub label: String,
     pub comment: Option<String>,
+    pub meta: Option<MetaValue>,
     pub parameters: Vec<CVariableDeclaration>,
 }
 
@@ -976,6 +995,7 @@ pub struct CVariableDeclaration {
     pub comment: Option<String>,
     pub is_const: bool,
     pub variable_type: CVariableType,
+    pub meta: Option<MetaValue>,
 }
 
 impl fmt::Display for CVariableDeclaration {

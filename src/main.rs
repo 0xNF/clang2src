@@ -4,8 +4,11 @@ pub mod generator_go2;
 pub mod lexer;
 pub mod meta;
 use clap::{Parser, Subcommand};
-
+use std::fs::File;
+use std::io::prelude::*;
+use std::path::PathBuf;
 use std::{path::Path, process::exit};
+use uuid::Uuid;
 
 use crate::lexer::{parse, tokenize};
 
@@ -48,9 +51,53 @@ fn main() {
             library_name,
         } => {
             let res = generator_dart::generate(header, &library_path, &library_name);
+            if check_program_exists("dart") {
+                let fpath = match save_temporary_output(&res, ".dart") {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        eprintln!("Failed to write temporary output for dart formatting {}", e);
+                        None
+                    }
+                };
+
+                if let Some(p) = fpath {
+                    match std::process::Command::new("dart")
+                        .args(vec![
+                            "format",
+                            "--fix",
+                            "-o",
+                            "show",
+                            (p.as_os_str().to_str()).unwrap(),
+                        ])
+                        .stdout(std::process::Stdio::piped())
+                        .output()
+                    {
+                        Ok(val) => {
+                            println!("{}", String::from_utf8(val.stdout).unwrap());
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to run dart format: {}", e);
+                        }
+                    };
+                    if let Err(e) = delete_temporary_output(&p) {
+                        eprintln!("Failed to delete temporary file {}", e);
+                    }
+                }
+            }
             println!("{}", &res);
         }
     }
+}
+
+fn save_temporary_output(output: &str, extension: &str) -> Result<PathBuf, std::io::Error> {
+    let file_name = &format!("{}.{}", Uuid::new_v4().to_string(), extension);
+    let mut file = File::create(file_name)?;
+    file.write(output.as_bytes())?;
+    Ok(Path::new(file_name).to_path_buf())
+}
+
+fn delete_temporary_output(path: &PathBuf) -> Result<(), std::io::Error> {
+    std::fs::remove_file(path)
 }
 
 fn check_program_exists(program_name: &str) -> bool {
