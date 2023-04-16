@@ -183,7 +183,7 @@ uint32_t encrypt(const char *plain_text,
  * #meta: throws;
  * #meta_param: encrypted_text;string;
  * #meta_param: decrypted_output;output;string;
- * #meta_param: err_ptr;error;xxxxxxxxxxxx
+ * #meta_param: err_ptr;error;
  */
 uint32_t decrypt(const char *encrypted_text,
                  char **decrypted_output,

@@ -617,7 +617,7 @@ fn parse_function_parameter(
                 let variable_type =
                     match_variable_signature(signature, is_struct, is_enum, pointer_count)?;
                 let variable_decl = CVariableDeclaration {
-                    meta: Some(MetaValue::from_meta_comment_for_param(&comment, label)),
+                    meta: MetaValue::from_meta_comment_for_param(&comment, label),
                     comment: match &comment {
                         Some(cmt) => Some(cmt.to_owned()),
                         None => None,

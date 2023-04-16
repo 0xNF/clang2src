@@ -20,7 +20,7 @@
                 }
             },
             "args": [
-                "tests/test_file.h",
+                "tests/liboauthtool.h",
                 "dart",
                 "libs",
                 "liboauthtool",

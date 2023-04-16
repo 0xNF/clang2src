@@ -30,6 +30,28 @@ pub struct MetaValue {
 }
 
 impl MetaValue {
+    /// `true` if the meta object is totally unset for all properties
+    pub fn is_empty(&self) -> bool {
+        return !self.for_struct
+            && !self.for_struct
+            && !self.is_static
+            && !self.is_nullable
+            && !self.is_list
+            && !self.is_this
+            && !self.throws
+            && !self.is_destructor
+            && !self.is_constructor
+            && !self.is_string
+            && !self.is_hashmap
+            && !self.is_error
+            && !self.is_duration
+            && !self.is_datetime
+            && !self.is_output
+            && !self.is_url
+            && !self.is_timestamp
+            && matches!(self.length_for, None)
+            && matches!(self.capacity_for, None);
+    }
     pub fn new() -> Self {
         MetaValue {
             is_persistent: false,
@@ -54,7 +76,7 @@ impl MetaValue {
         }
     }
 
-    pub fn from_meta_comment_for_param(cmt: &Option<String>, param_name: &str) -> Self {
+    pub fn from_meta_comment_for_param(cmt: &Option<String>, param_name: &str) -> Option<Self> {
         if let Some(c) = cmt {
             // This matcher is of the form `#meta_param: <name>;`, e..g,  #meta_param: encrypted;`
             let match_param_str = format!("{} {};", META_PARAM_TOKEN, param_name);
@@ -79,9 +101,9 @@ impl MetaValue {
                     }
                 }
             }
-            meta
+            Some(meta)
         } else {
-            MetaValue::new()
+            None
         }
     }
 
