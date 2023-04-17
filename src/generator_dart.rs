@@ -10,7 +10,7 @@ use serde::{Serialize, Serializer};
 use crate::lexer::{
     CEnum, CFunction, CIdentifier, CStruct, CType, CVariableDeclaration, CVariableType, HeaderFile,
 };
-use crate::meta::{MetaValue, META_TOKEN};
+use crate::meta::{self, MetaValue, META_TOKEN};
 
 const C_PREFIX: &str = "C_";
 
@@ -24,6 +24,7 @@ struct Data<'a> {
     ffi_functions: Vec<DartFunction>,
     constants: Vec<DartVariable>,
     native_free_functions: Vec<DartFunction>,
+    dart_classes: Vec<DartClass>,
     // functions: Vec<CSharpFunction>,
 }
 
@@ -51,15 +52,17 @@ impl<'a> Data<'a> {
             .map(|f| DartFunction::from(f, true))
             .collect();
 
-        let native_free_functions: Vec<DartFunction> = vec![]; //header
-                                                               // .functions
-                                                               // .iter()
-                                                               // .filter(|f| match &f.meta {
-                                                               //     None => true,
-                                                               //     Some(m) => !m.for_struct,
-                                                               // })
-                                                               // .map(|f| DartFunction::from(f, false))
-                                                               // .collect();
+        let dart_classes: Vec<DartClass> = vec![];
+
+        let native_free_functions: Vec<DartFunction> = header
+            .functions
+            .iter()
+            .filter(|f| match &f.meta {
+                None => true,
+                Some(m) => !m.for_struct,
+            })
+            .map(|f| DartFunction::from(f, false))
+            .collect();
 
         Data {
             library_path,
@@ -70,6 +73,7 @@ impl<'a> Data<'a> {
             constants,
             ffi_functions,
             native_free_functions,
+            dart_classes,
         }
     }
 
@@ -88,6 +92,7 @@ impl<'a> Data<'a> {
         context.insert("ffi_functions", &self.ffi_functions);
         context.insert("constants", &self.constants);
         context.insert("dart_native_free_functions", &self.native_free_functions);
+        context.insert("dart_classes", &self.dart_classes);
 
         context
     }
@@ -348,6 +353,7 @@ struct DartField {
 #[derive(Serialize, Clone, Debug)]
 struct DartParameter {
     kind: DartDataType,
+    requires_pointer: bool,
     ffi_kind: DartFFIDataType,
     identifier: DartIdentifier,
     default_value: Option<DartValue>,
@@ -363,7 +369,10 @@ impl DartParameter {
             DartIdentifier::new(&c.label, None)
         };
 
-        let kind = DartDataType::from_meta(&c.variable_type, &c.meta, as_ffi);
+        if !as_ffi {
+            println!("todo remove me for testing");
+        }
+        let kind = DartDataType::from_meta(&c.label, &c.variable_type, &c.meta, as_ffi);
         let ffi_kind = DartFFIDataType::from(c);
         DartParameter {
             ffi_kind: DartFFIDataType::from(c),
@@ -372,6 +381,7 @@ impl DartParameter {
             } else {
                 identifier.clone().dart_label
             },
+            requires_pointer: kind.requires_pointer(),
             as_primitive_kind: kind.to_primitive(),
             identifier,
             kind,
@@ -494,6 +504,9 @@ impl Display for DartVariable {
 }
 
 #[derive(Serialize, Debug)]
+struct DartClass {}
+
+#[derive(Serialize, Debug)]
 struct DartFunction {
     /// Whether this function should be attached to a class
     on_class: Option<DartIdentifier>,
@@ -505,6 +518,12 @@ struct DartFunction {
     dart_comment: Option<DartComment>,
     /// Whether this function returns `void`
     is_void: bool,
+
+    /// Whether this function `throws` via the `ErrPtr` string
+    throws: bool,
+
+    /// Whether the return vaue requires pointer manipulation
+    output_requires_pointer: bool,
 
     /// Whether this function is of the form `Future<T> xyz() async`
     is_async: bool,
@@ -529,7 +548,11 @@ struct DartFunction {
 
 impl DartFunction {
     fn from(c: &CFunction, as_ffi: bool) -> Self {
-        let return_type = DartDataType::from(&*c.return_type);
+        let mut return_type = DartDataType::from(&*c.return_type);
+
+        let mut throws: bool = false;
+
+        let mut requires_pointer: bool = false;
 
         DartFunction {
             on_class: None,
@@ -538,11 +561,69 @@ impl DartFunction {
             dart_comment: c.comment.to_owned().map(DartComment::from),
             is_void: matches!(c.return_type.kind, CType::Void),
             is_async: false,
-            parameters: c
-                .parameters
-                .iter()
-                .map(|p| DartParameter::from(p, as_ffi))
-                .collect(),
+            parameters: {
+                if !as_ffi {
+                    throws = true;
+                    // FYI(nf, 04/17/23): non-ffi items should be stripped of their Output and Error params
+                    let params: Vec<DartParameter> = c
+                        .parameters
+                        .iter()
+                        .filter(|p| match &p.meta {
+                            Some(m) => !(m.is_output || m.is_error),
+                            None => true,
+                        })
+                        .map(|p| DartParameter::from(p, false))
+                        .collect();
+
+                    if c.parameters
+                        .iter()
+                        .filter(|p| match &p.meta {
+                            Some(m) => m.is_error,
+                            None => false,
+                        })
+                        .map(|p: &CVariableDeclaration| DartNativeDataType::from(p))
+                        .collect::<Vec<DartNativeDataType>>()
+                        .is_empty()
+                    {
+                        throws = false;
+                    }
+
+                    // Check output
+                    if let Some(p) = c
+                        .parameters
+                        .iter()
+                        .filter(|p| match &p.meta {
+                            Some(m) => m.is_output,
+                            None => false,
+                        })
+                        .map(|p: &CVariableDeclaration| DartNativeDataType::from(p))
+                        .collect::<Vec<DartNativeDataType>>()
+                        .first()
+                    {
+                        return_type = DartDataType::NativeType(p.to_owned());
+                        requires_pointer = return_type.requires_pointer();
+                    }
+
+                    /// Check `this`
+                    let this: Option<&DartParameter> = c
+                        .parameters
+                        .iter()
+                        .filter(|p| match &p.meta {
+                            Some(m) => m.is_this,
+                            None => false,
+                        })
+                        .map(|p| DartParameter::from(p, false))
+                        .collect::<Vec<DartParameter>>()
+                        .first();
+
+                    params
+                } else {
+                    c.parameters
+                        .iter()
+                        .map(|p| DartParameter::from(p, as_ffi))
+                        .collect()
+                }
+            },
             meta: c.meta.as_ref().map(|meta| meta.clone()),
             ffi_return_type: {
                 let mut pointer_count = c.return_type.pointer_count;
@@ -555,7 +636,9 @@ impl DartFunction {
                 }
                 Some(ffi_type)
             },
+            throws,
             return_type,
+            output_requires_pointer: requires_pointer,
             is_return_struct: c.return_type.is_struct,
             requires_ffi_function_pointers: true, // always true here because we are From'ing from a CFunction
         }
@@ -737,6 +820,33 @@ impl DartFFIDataType {
             }
         }
     }
+
+    fn requires_pointer(&self) -> bool {
+        match &self {
+            DartFFIDataType::NativeType
+            | DartFFIDataType::Handle
+            | DartFFIDataType::NativeFunction { sub_type: _ } => {
+                panic!("cannot check pointerness of this type: {}", &self)
+            }
+            DartFFIDataType::Pointer { sub_type: _ }
+            | DartFFIDataType::Void
+            | DartFFIDataType::Char
+            | DartFFIDataType::Opaque(_)
+            | DartFFIDataType::Struct(_) => true,
+            DartFFIDataType::Int8
+            | DartFFIDataType::Int16
+            | DartFFIDataType::Int32
+            | DartFFIDataType::Int64
+            | DartFFIDataType::UIntPtr
+            | DartFFIDataType::UInt8
+            | DartFFIDataType::Uint16
+            | DartFFIDataType::UInt32
+            | DartFFIDataType::UInt64
+            | DartFFIDataType::Float
+            | DartFFIDataType::Double
+            | DartFFIDataType::Bool => false,
+        }
+    }
 }
 
 impl Display for DartFFIDataType {
@@ -811,7 +921,7 @@ impl From<&MetaValue> for DartNativeDataType {
             }
         } else if meta_value.is_string {
             DartNativeDataType::String
-        } else if (meta_value.is_timestamp) {
+        } else if meta_value.is_timestamp {
             DartNativeDataType::DateTime
         } else if meta_value.is_url {
             DartNativeDataType::Uri
@@ -829,13 +939,49 @@ impl From<&MetaValue> for DartNativeDataType {
 impl From<&CVariableDeclaration> for DartNativeDataType {
     fn from(c: &CVariableDeclaration) -> Self {
         match &c.meta {
-            None => DartNativeDataType::from(&c.variable_type.kind),
-            Some(meta_value) => DartNativeDataType::from(meta_value),
+            None => DartNativeDataType::from(&c.variable_type),
+            Some(meta_value) => {
+                if c.variable_type.is_struct {
+                    DartNativeDataType::CustomClass(DartIdentifier::make_label_for_custom_type(
+                        &c.label,
+                    ))
+                } else {
+                    DartNativeDataType::from(meta_value)
+                }
+            }
         }
     }
 }
 
-impl DartNativeDataType {}
+impl From<&CVariableType> for DartNativeDataType {
+    fn from(c: &CVariableType) -> Self {
+        DartNativeDataType::from(&c.kind)
+    }
+}
+
+impl DartNativeDataType {
+    fn requires_pointer(&self) -> bool {
+        match &self {
+            DartNativeDataType::String
+            | DartNativeDataType::Uri
+            | DartNativeDataType::DateTime
+            | DartNativeDataType::CustomClass(_)
+            | DartNativeDataType::Map {
+                key_type: _,
+                value_type: _,
+            }
+            | DartNativeDataType::List { sub_type: _ } => true,
+
+            DartNativeDataType::Int
+            | DartNativeDataType::Double
+            | DartNativeDataType::CustomEnum(_)
+            | DartNativeDataType::Duration => false,
+            DartNativeDataType::Void => {
+                panic!("Cannot test pointerness of this data type: {}", &self)
+            }
+        }
+    }
+}
 
 impl Serialize for DartNativeDataType {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -917,6 +1063,13 @@ enum DartDataType {
 }
 
 impl DartDataType {
+    fn requires_pointer(&self) -> bool {
+        match &self {
+            DartDataType::NativeType(nt) => nt.requires_pointer(),
+            DartDataType::FFIType(ft) => ft.requires_pointer(),
+        }
+    }
+
     fn for_struct(&self) -> Self {
         match &self {
             DartDataType::NativeType(nt) => self.to_owned(),
@@ -974,19 +1127,30 @@ impl DartDataType {
         }
     }
 
-    fn from_meta(cvariable: &CVariableType, meta: &Option<MetaValue>, for_ffi: bool) -> Self {
+    fn from_meta(
+        label: &str,
+        cvariable: &CVariableType,
+        meta: &Option<MetaValue>,
+        for_ffi: bool,
+    ) -> Self {
         if for_ffi {
             DartDataType::from(cvariable)
         } else {
             match meta {
                 Some(m) => {
-                    if m.is_empty() {
-                        DartDataType::from(cvariable)
+                    // if m.is_empty() {
+                    //     DartDataType::from(cvariable)
+                    // } else {
+                    if cvariable.is_struct {
+                        DartDataType::NativeType(DartNativeDataType::CustomClass(
+                            DartIdentifier::make_label_for_custom_type(label),
+                        ))
                     } else {
                         DartDataType::NativeType(DartNativeDataType::from(m))
                     }
+                    // }
                 }
-                None => DartDataType::from(cvariable),
+                None => DartDataType::NativeType(DartNativeDataType::from(cvariable)),
             }
         }
     }
@@ -1068,6 +1232,7 @@ pub fn generate(header: HeaderFile, library_path: &str, library_name: &str) -> S
         ("dart_ffi_structs", TEMPLATE_FFI_STRUCTS),
         ("dart_ffi_functions", TEMPLATE_FFI_FUNCTIONS),
         ("dart_native_free_functions", TEMPLATE_DART_NATIVE_FUNCTIONS),
+        ("dart_pointer_for_type", TEMPLATE_POINTER_FOR_TYPE),
         ("utilities", TEMPLATE_UTILITY_FUNCTIONS),
     ];
 
@@ -1098,15 +1263,15 @@ const TEMPLATE_DART_HEADER: &str = "
 ";
 
 const TEMPLATE_C_CONSTANTS: &str = "
-/// Region: C Constants
+/* Region: C Constants */
 const int C_NULL = 0;
 const int C_TRUE = 1;
 const int C_FALSE = 0;
 ";
 
 const TEMPLATE_DART_CONSTANTS: &str = "
-/// Region: Dart Constants
 {% if constants | length %}
+/* Region: Dart Constants */
 {% for constant in constants %}
 {% if constant.dart_comment is some %}{{ constant.dart_comment }}{% endif %}
 const {{ constant.data_type }} {{ constant.identifier.dart_label }} = {{ constant.value }};
@@ -1116,6 +1281,7 @@ const {{ constant.data_type }} {{ constant.identifier.dart_label }} = {{ constan
 
 const TEMPLATE_FFI_STRUCTS: &str = "
 {% if ffi_structs | length %}
+/* Region: FFI Structs */
 {% for ffi_struct in ffi_structs %}
 class {{ ffi_struct.label }} extends {% if ffi_struct.is_opaque %}ffi.Opaque{% else %}ffi.Struct{% endif %} {
     {% for field in ffi_struct.fields %}
@@ -1132,6 +1298,7 @@ class {{ ffi_struct.label }} extends {% if ffi_struct.is_opaque %}ffi.Opaque{% e
 const TEMPLATE_DART_ENUMS: &str = "
 {% block title %}{% endblock %}
 {% if enums | length %}
+/* Region: FFI Enums */
 {% for enum in enums %}
 {% if enum.dart_comment is some %}{{ enum.dart_comment }}{% endif %}
 enum {{ enum.name }} {
@@ -1152,6 +1319,7 @@ enum {{ enum.name }} {
 const TEMPLATE_FFI_FUNCTIONS: &str = "
 {% block title %}{% endblock %}
 {% if ffi_functions | length %}
+/* Region: FFI Free Functions */
 {% for ffi_function in ffi_functions %}
 {{ ffi_function.return_type }} {{ffi_function.identifier.dart_label}}(
     {% for parameter in ffi_function.parameters %}
@@ -1174,13 +1342,159 @@ final _{{ ffi_function.identifier.dart_label }} = {{ ffi_function.identifier.dar
 const TEMPLATE_DART_NATIVE_FUNCTIONS: &str = "
 {% block title %}{% endblock %}
 {% if dart_native_free_functions | length %}
+/* Region: Dart Free Functions */
 {% for function in dart_native_free_functions %}
-var xys = 'lmao free function';
+{{ function.return_type }} {{ function.identifier.dart_label}}({% for parameter in function.parameters %} {{ parameter.kind }} {{ parameter.identifier.dart_label }}, {% endfor %}) {
+    {% if function.throws %}
+    /* Get error pointer in case function returns failure */
+    final cErrPtr = _getEmptyStringPointer();
+
+    {% if function.parameters | length %}
+    /* get pointer types for items that require it*/
+    {% for parameter in function.parameters %}
+    {% if parameter.requires_pointer %}
+    final c{{ parameter.identifier.dart_label}}Ptr = getPointerForData({{ parameter.identifier.dart_label }});
+    {% endif %}
+    {% endfor %}
+    {% endif %}
+
+    {% if function.output_requires_pointer %}
+    /* get Output Pointer type */
+    final c{{function.c_function_name}}OutputPtr = _getPointerForType<{{ function.return_type }}>();
+    {% endif %}
+
+    /* call native function */
+    int errCode = _{{ function.identifier.dart_label }}(
+        {% if function.output_requires_pointer %}
+        c{{function.c_function_name}}OutputPtr.cast(),
+        {% endif %}
+        {% for parameter in function.parameters %}
+        {% if parameter.requires_pointer %} c{{ parameter.identifier.dart_label }}Ptr.cast(){% else %} {{ parameter.identifier.dart_label }}{% endif %},
+        {% endfor %}
+        cErrPtr,
+    );
+
+    /* Check error code */
+    if errCode != C_FALSE {
+        /* free pointers if required  */
+        {% for parameter in function.parameters %}
+        {% if parameter.requires_pointer %}
+        calloc.free(c{{ parameter.identifier.dart_label }}Ptr);
+        {% endif %}
+        {% endfor %}
+        {% if function.output_requires_pointer %}
+        calloc.free(c{{function.c_function_name}}OutputPtr);
+        {% endif %}
+
+        /* throw final Exception */
+        throw OAuthToolException(_getDartStringFromDoublePtr(cErrPtr), errCode);
+    }
+
+    /* Free allocated pointers */
+    {% for parameter in function.parameters %}
+    {% if parameter.requires_pointer %}
+    calloc.free(c{{ parameter.identifier.dart_label}}Ptr);
+    {% endif %}
+    {% endfor %}
+    {% if function.throws %}
+    calloc.free(cErrPtr);
+    {% endif %}
+
+    /* return final value */
+
+
+    {% else %}
+    lol?
+    {% endif %}
+}
 {% endfor %}
 {% endif %}
 ";
 
+const TEMPLATE_POINTER_FOR_TYPE: &str = "
+/* Region: Dart Pointer Utility Functions  */
+
+/// Interface to get a Pointer to the backing data on classes that 
+/// cross FFI boundaries
+abstract class IWithPtr {
+    ffi.Pointer<ffi.Void> getPointer();
+}
+
+/// Holds the symbol lookup function.
+final ffi.Pointer<T> Function<T extends ffi.NativeType>(String symbolName) _lookup = loadLibrary(getLibraryPath()).lookup;
+
+Pointer<Void> _getPointerForType<T>() {
+    if (T == String) {
+      return _getEmptyStringPointer().cast();
+    } 
+    {% for class in dart_classes %}
+    else if(T == {{ class.identifier.dart_label }}) {
+        return calloc<Pointer<{{ class.ffi_kind }}>().cast();
+    }
+    {% endfor %}
+    else {
+      throw Exception('Invalid type: $T');
+    }
+  }
+
+  /// Returns a castable pointer based on the input data.
+/// This function is only valid for Types [String, {custom C generated classes}]
+/// Will throw an Exception if passed invalid types
+ffi.Pointer<ffi.Void> _getPointerForData(dynamic data) {
+    if (data is String) {
+      return _stringToFFIPointer(data).cast();
+    } else if (data is IWithPtr) {
+      return data.getPointer().cast();
+    } else {
+      throw Exception('Invalid data type for pointer: $data');
+    }
+  }
+
+
+/// Returns a Dart String from a `char*`
+///
+/// n.b., THIS CONSUMES AND FREES THE POINTER
+/// Do not use `charPtr` after this
+///
+/// For double pointers `char**` use `_getDartStringFromDoublePtr`
+String _getDartStringFromPtr(ffi.Pointer<ffi.Char> charPtr) {
+  final asUtf8Ptr = charPtr.cast<Utf8>();
+  final asDartString = asUtf8Ptr.toDartString();
+  calloc.free(charPtr);
+  return asDartString;
+}
+
+/// Returns a Dart String from a `char**`
+///
+/// n.b., THIS CONSUMES AND FREES THE POINTER
+/// Do not use `charPtr` after this
+///
+/// For single pointers `char*` use `_getDartStringFromPtr`
+String _getDartStringFromDoublePtr(ffi.Pointer<ffi.Pointer<ffi.Char>> doublePtr) {
+  final asCharPtr = doublePtr.value.cast<ffi.Char>();
+  final dstr = _getDartStringFromPtr(asCharPtr);
+  calloc.free(doublePtr);
+  return dstr;
+}
+
+ffi.Pointer<ffi.Char> _stringToFFIPointer(String s) {
+  return s.toNativeUtf8().cast<ffi.Char>();
+}
+
+ffi.Pointer<ffi.Char> _hashMapToFFIPointer(Map<String, String> dict) {
+  String val = dict.entries.map((e) => \"${e.key}:${e.value}\").join(';');
+  return _stringToFFIPointer(val);
+}
+
+/// Returns the Dart equivalent of an empty `char**`
+ffi.Pointer<ffi.Pointer<ffi.Char>> _getEmptyStringPointer() {
+  return calloc<ffi.Pointer<ffi.Char>>();
+}
+";
+
 const TEMPLATE_UTILITY_FUNCTIONS: &str = "
+/* Region: Utility Functions  */
+
 /// Loads the dynamic library using an appropriate extension for the given platform
 String getLibraryPath() {
   var libraryPath = path.join(Directory.current.path, '{{meta.library_path}}', '{{meta.library_name}}.so');
@@ -1197,35 +1511,4 @@ ffi.DynamicLibrary loadLibrary(String libraryPath) {
   final dylib = ffi.DynamicLibrary.open(libraryPath);
   return dylib;
 }
-
-/// Returns a Dart String from a `char*`
-///
-/// n.b., THIS CONSUMES AND FREES THE POINTER
-/// Do not use `charPtr` after this
-///
-/// For double pointers `char**` use `_getDartStringFromDoublePtr`
-String _getDartStringFromPtr(ffi.Pointer<ffi.Char> charPtr) {
-  final asUtf8Ptr = charPtr.cast<Utf8>();
-  final asDartString = asUtf8Ptr.toDartString();
-  calloc.free(charPtr);
-  return asDartString;
-}
-
-ffi.Pointer<ffi.Char> _stringToFFIPointer(String s) {
-  return s.toNativeUtf8().cast<ffi.Char>();
-}
-
-ffi.Pointer<ffi.Char> _hashMapToFFIPointer(Map<String, String> dict) {
-  String val = dict.entries.map((e) => \"${e.key}:${e.value}\").join(';');
-  return _stringToFFIPointer(val);
-}
-
-/// Returns the Dart equivalent of an empty `char**`
-ffi.Pointer<ffi.Pointer<ffi.Char>> _getEmptyStringPointer() {
-  return calloc<ffi.Pointer<ffi.Char>>();
-}
-
-/// Holds the symbol lookup function.
-final ffi.Pointer<T> Function<T extends ffi.NativeType>(String symbolName) _lookup = loadLibrary(getLibraryPath()).lookup;
-
 ";

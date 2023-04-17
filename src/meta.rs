@@ -9,23 +9,77 @@ pub const META_PARAM_TOKEN: &str = "#meta_param:";
 #[derive(Debug, Serialize, Clone)]
 pub struct MetaValue {
     pub is_persistent: bool,
+
+    /// Whether this is a method that belongs on struct, the struct itself being denoted by the text leading up the first underscore in the function name
+    /// #meta: for_struct;
     pub for_struct: bool,
+
+    /// if `for_strict` is set, whether this function should be a static method on the struct
+    /// #meta: is_static;
     pub is_static: bool,
+
+    /// Whether this value can be null (or Option) in languages which recognize the concept
+    /// #meta_param: value_name;nullable;
     pub is_nullable: bool,
+
+    /// Whether this value must be handed in as a Struct Ptr for the underlying C call
+    /// #meta_param: value_name;as_ptr;
+    pub as_ptr: bool,
+
+    /// Whether this value should be interpreted as a List
+    /// See also: `length_for` and `capacity_for`
     pub is_list: bool,
+
     pub is_this: bool,
+
+    /// Whether this function should return an error value if the method call fails  
+    /// If true, then the message will be found in a corresponding `#meta_param` field marked with `error`  
+    /// #meta: throws;  
     pub throws: bool,
+
+    /// Whether this function should be considered a Destructor, which frees the resources used
+    /// #meta: destructor;
     pub is_destructor: bool,
+
+    /// Whether this function should be considered a Constructor for creating new instances
+    /// #meta: constructor;
     pub is_constructor: bool,
+
+    /// Whether this value should be represented by a `String` in most languages
+    /// #meta_param: value_name;string;
     pub is_string: bool,
+
+    /// Whether this value is a representing a Map or Dictionary
+    /// #meta_param: value_name;hashmap;
     pub is_hashmap: bool,
+
+    /// Whether this value is a pointer to a string that will handle the Error Message of this function
+    /// #meta_param: value_name;error;
     pub is_error: bool,
+
+    /// Whether this value should be represented by the language's native Duration/TimeSpan type (or otherwise a long)
+    /// #meta_param: value_name;duration;
     pub is_duration: bool,
+    /// Whether this value should be represented by the language's native DateTime type (or otherwise a long)
+    /// #meta_param: value_name;datetime;
     pub is_datetime: bool,
+
     pub is_output: bool,
+
+    /// Whether this value should be represented by the language's native URI type
+    /// #meta_param: value_name;url;
     pub is_url: bool,
+
+    /// Whether this value should be represented by the language's native Timestamp type (or otherwise a long)
+    /// #meta_param: value_name;timestamp;
     pub is_timestamp: bool,
+
+    /// If `list` is set, this value is the `len` of the array
+    /// #meta_param: value_name;length_for(#param);
     pub length_for: Option<String>,
+
+    /// If `list` is set, this value is the `cap` of the array
+    /// #meta_param: value_name;capacity_for(#param);
     pub capacity_for: Option<String>,
 }
 
@@ -33,7 +87,6 @@ impl MetaValue {
     /// `true` if the meta object is totally unset for all properties
     pub fn is_empty(&self) -> bool {
         return !self.for_struct
-            && !self.for_struct
             && !self.is_static
             && !self.is_nullable
             && !self.is_list
@@ -49,6 +102,7 @@ impl MetaValue {
             && !self.is_output
             && !self.is_url
             && !self.is_timestamp
+            && !self.as_ptr
             && matches!(self.length_for, None)
             && matches!(self.capacity_for, None);
     }
@@ -71,6 +125,7 @@ impl MetaValue {
             is_url: false,
             is_timestamp: false,
             is_this: false,
+            as_ptr: false,
             length_for: None,
             capacity_for: None,
         }
@@ -126,6 +181,7 @@ impl MetaValue {
             "datetime" => self.is_datetime = true,
             "output" => self.is_output = true,
             "url" => self.is_url = true,
+            "as_ptr" => self.as_ptr = true,
             "timestamp" => self.is_timestamp = true,
             _ => {
                 let compound_matcher = Regex::new(r"(\w+)\((\w+)\)").unwrap();
@@ -160,7 +216,7 @@ impl MetaValue {
         }
     }
 
-    pub fn from_meta_comment_dontcare(cmt: &Option<String>) -> Self {
+    pub fn from_meta_comment_dontcare(cmt: &Option<String>) -> Option<Self> {
         if let Some(c) = cmt {
             for s in c.split('\n') {
                 if s.contains(META_TOKEN) || s.contains(META_PARAM_TOKEN) {
@@ -168,10 +224,10 @@ impl MetaValue {
                 }
             }
         }
-        MetaValue::new()
+        None
     }
 
-    pub fn from_meta_comment(cmt: &str) -> Self {
+    pub fn from_meta_comment(cmt: &str) -> Option<Self> {
         let meta_matcher = Regex::new(r"(\w+(?:\(\w+\))?);").unwrap();
         let mut meta = MetaValue::new();
         let mut mm = meta_matcher.captures_iter(cmt);
@@ -186,6 +242,6 @@ impl MetaValue {
                 }
             }
         }
-        meta
+        Some(meta)
     }
 }

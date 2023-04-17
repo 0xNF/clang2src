@@ -407,8 +407,9 @@ impl From<&CVariableType> for GoType {
 }
 impl From<&CVariableDeclaration> for GoType {
     fn from(c: &CVariableDeclaration) -> Self {
-        let meta: MetaValue = MetaValue::from_meta_comment_dontcare(&c.comment);
-        GoType::_from(c, &meta)
+        let meta_opt = MetaValue::from_meta_comment_dontcare(&c.comment);
+        let mm = meta_opt.map_or(MetaValue::new(), |x| x.to_owned());
+        GoType::_from(c, &mm)
     }
 }
 impl Serialize for GoType {
@@ -541,7 +542,8 @@ impl GoFunction {
     }
 
     fn from_cfunc(all_enums: &Vec<GoEnum>, all_structs: &mut Vec<GoStruct>, c: &CFunction) -> Self {
-        let function_meta_values: MetaValue = MetaValue::from_meta_comment_dontcare(&c.comment);
+        let function_meta_values: MetaValue = MetaValue::from_meta_comment_dontcare(&c.comment)
+            .map_or(MetaValue::new(), |x| x.to_owned());
 
         let mut identifier = GoIdentifier::new(&c.label, None);
 
@@ -602,7 +604,8 @@ impl GoFunction {
                     .trim()
                     .to_string();
                 let cdr = items[1..].join(";");
-                let meta_value = MetaValue::from_meta_comment(&cdr);
+                let meta_value =
+                    MetaValue::from_meta_comment(&cdr).map_or(MetaValue::new(), |x| x.to_owned());
                 param2meta.insert(car, meta_value);
             }
         }
@@ -697,7 +700,8 @@ impl From<&CStruct> for GoStruct {
             None => None,
         };
 
-        let meta: MetaValue = MetaValue::from_meta_comment_dontcare(&c.comment);
+        let meta: MetaValue = MetaValue::from_meta_comment_dontcare(&c.comment)
+            .map_or(MetaValue::new(), |x| x.to_owned());
 
         let mut fields: Vec<GoField> =
             c.declarations
@@ -728,7 +732,8 @@ impl From<&CStruct> for GoStruct {
                 as_c_field: format!("{}{}", FIELD_SELF, FIELD_PTR),
                 from_c_field: "TOFO(NF, IS_PERSISTENT)".to_owned(),
                 go_comment: Some(GoComment::new("// reference to C pointer")),
-                meta: MetaValue::from_meta_comment_dontcare(&None),
+                meta: MetaValue::from_meta_comment_dontcare(&None)
+                    .map_or(MetaValue::new(), |x| x.to_owned()),
                 identifier: GoIdentifier {
                     go_label: FIELD_PTR.to_owned(),
                     go_comment: None,
@@ -774,7 +779,8 @@ struct GoEnum {
 }
 impl From<&CEnum> for GoEnum {
     fn from(c: &CEnum) -> Self {
-        let meta: MetaValue = MetaValue::from_meta_comment_dontcare(&c.comment);
+        let meta: MetaValue = MetaValue::from_meta_comment_dontcare(&c.comment)
+            .map_or(MetaValue::new(), |x| x.to_owned());
 
         let identifier = GoIdentifier::new(&c.identifier.label, None);
         let comment = match &c.comment {
@@ -911,7 +917,8 @@ impl From<&CVariableDeclaration> for GoField {
     fn from(c: &CVariableDeclaration) -> Self {
         let go_type = GoType::from(c);
         let go_identifier = GoIdentifier::new(&c.label, None);
-        let meta_value = MetaValue::from_meta_comment_dontcare(&c.comment);
+        let meta_value = MetaValue::from_meta_comment_dontcare(&c.comment)
+            .map_or(MetaValue::new(), |x| x.to_owned());
         GoField {
             identifier: go_identifier,
             c_identifier: CIdentifier::new(&c.label, None),

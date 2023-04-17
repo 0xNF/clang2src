@@ -232,7 +232,7 @@ fn parse_enum(
                         label: label.to_owned(),
                         comment: None,
                     },
-                    meta: Some(MetaValue::from_meta_comment_dontcare(&comment)),
+                    meta: MetaValue::from_meta_comment_dontcare(&comment),
                     comment,
                     declarations,
                 }));
@@ -276,7 +276,7 @@ fn parse_struct(
                 label: label.to_owned(),
                 comment: None,
             },
-            meta: Some(MetaValue::from_meta_comment_dontcare(&comment)),
+            meta: MetaValue::from_meta_comment_dontcare(&comment),
             comment,
             declarations: members,
         }));
@@ -297,7 +297,7 @@ fn parse_struct(
                         label: label.to_owned(),
                         comment: None,
                     },
-                    meta: Some(MetaValue::from_meta_comment_dontcare(&comment)),
+                    meta: MetaValue::from_meta_comment_dontcare(&comment),
 
                     comment,
                     declarations: members,
@@ -320,7 +320,7 @@ fn parse_struct(
             label: label.to_owned(),
             comment: None,
         },
-        meta: Some(MetaValue::from_meta_comment_dontcare(&comment)),
+        meta: MetaValue::from_meta_comment_dontcare(&comment),
         comment,
         declarations: members,
     };
@@ -360,7 +360,7 @@ fn parse_struct_member(
                 let variable_type =
                     match_variable_signature(signature, is_struct, is_enum, pointer_count)?;
                 let variable_decl = CVariableDeclaration {
-                    meta: Some(MetaValue::from_meta_comment_dontcare(&comment)),
+                    meta: MetaValue::from_meta_comment_dontcare(&comment),
                     comment: match &comment {
                         Some(cmt) => Some(cmt.to_owned()),
                         None => None,
@@ -529,7 +529,7 @@ fn parse_function(
                 return Ok(CType::Function(CFunction {
                     return_type: Box::new(return_type),
                     label: label.to_string(),
-                    meta: Some(MetaValue::from_meta_comment_dontcare(&comment)),
+                    meta: MetaValue::from_meta_comment_dontcare(&comment),
                     comment,
                     parameters,
                 }));
@@ -559,7 +559,7 @@ fn parse_function(
     let func: CFunction = CFunction {
         return_type: Box::new(return_type),
         label: label.to_string(),
-        meta: Some(MetaValue::from_meta_comment_dontcare(&comment)),
+        meta: MetaValue::from_meta_comment_dontcare(&comment),
         comment,
         parameters,
     };

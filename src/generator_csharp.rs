@@ -40,18 +40,20 @@ impl<'a> Data<'a> {
             }
         }
         for f in functions.iter_mut() {
-            if f.meta.for_struct {
-                let v: Vec<&str> = f.c_label.split("_").collect();
-                let struct_name = v.first().unwrap();
-                for _struct in structs.into_iter() {
-                    if _struct.label == *struct_name {
-                        let mut f_clone = f.clone();
-                        let repl = format!("{}_", _struct.label);
-                        let replaced = f.csharp_label.replace(&repl, "");
-                        f_clone.csharp_label = replaced;
-                        // f_clone.csharp_label =
-                        //     (f.csharp_label).replace(&format!("{}_", _struct.label), "");
-                        _struct.functions.push(f_clone);
+            if let Some(meta) = &f.meta {
+                if meta.for_struct {
+                    let v: Vec<&str> = f.c_label.split("_").collect();
+                    let struct_name = v.first().unwrap();
+                    for _struct in structs.into_iter() {
+                        if _struct.label == *struct_name {
+                            let mut f_clone = f.clone();
+                            let repl = format!("{}_", _struct.label);
+                            let replaced = f.csharp_label.replace(&repl, "");
+                            f_clone.csharp_label = replaced;
+                            // f_clone.csharp_label =
+                            //     (f.csharp_label).replace(&format!("{}_", _struct.label), "");
+                            _struct.functions.push(f_clone);
+                        }
                     }
                 }
             }
@@ -162,7 +164,7 @@ struct CSharpFunction {
     csharp_comment: Option<String>,
     return_type: CSharpVariable,
     parameters: Vec<CSharpVariable>,
-    meta: MetaValue,
+    meta: Option<MetaValue>,
 }
 impl From<&CFunction> for CSharpFunction {
     fn from(src: &CFunction) -> Self {
@@ -170,7 +172,7 @@ impl From<&CFunction> for CSharpFunction {
             CSharpVariable::sub_variable(&src.return_type.kind, src.return_type.pointer_count);
 
         let mut params: Vec<CSharpVariable> = vec![];
-        let mut param2meta: HashMap<String, MetaValue> = HashMap::new();
+        let mut param2meta: HashMap<String, Option<MetaValue>> = HashMap::new();
         if let Some(cmt) = &src.comment {
             let mut iter = cmt
                 .split('\n')
@@ -195,7 +197,7 @@ impl From<&CFunction> for CSharpFunction {
             }
 
             if let Some(meta_value) = &param2meta.get(&v.label) {
-                v.meta = (*meta_value).clone();
+                v.meta = (*meta_value).to_owned();
             }
 
             params.push(v);
@@ -215,9 +217,9 @@ impl From<&CFunction> for CSharpFunction {
                 data_type: ret_data_type.to_string(),
                 pointer_count: ret_pointer_count,
                 is_last: true,
-                meta: MetaValue::new(),
+                meta: None,
             },
-            meta: MetaValue::new(),
+            meta: None,
         }
     }
 }
@@ -231,7 +233,7 @@ struct CSharpVariable {
     data_type: String,
     pointer_count: u8,
     is_last: bool,
-    meta: MetaValue,
+    meta: Option<MetaValue>,
 }
 impl Display for CSharpVariable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -298,7 +300,7 @@ impl From<&CVariableDeclaration> for CSharpVariable {
             pointer_count,
             value: Some(data_type),
             is_last: false,
-            meta: MetaValue::new(),
+            meta: None,
         }
     }
 }
