@@ -65,26 +65,35 @@ fn main() {
                         .args(vec![
                             "format",
                             "--fix",
-                            "-o",
-                            "show",
+                            // "-o",
+                            // "show",
                             (p.as_os_str().to_str()).unwrap(),
                         ])
                         .stdout(std::process::Stdio::piped())
                         .output()
                     {
-                        Ok(val) => {
-                            println!("{}", String::from_utf8(val.stdout).unwrap());
-                        }
+                        Ok(_) => match std::fs::read_to_string(&p) {
+                            Ok(s) => {
+                                println!("{}", s);
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "Failed to run dart format: File could not be read: {}",
+                                    e
+                                );
+                            }
+                        },
                         Err(e) => {
                             eprintln!("Failed to run dart format: {}", e);
                         }
                     };
+
                     if let Err(e) = delete_temporary_output(&p) {
                         eprintln!("Failed to delete temporary file {}", e);
                     }
                 }
             }
-            println!("{}", &res);
+            // println!("{}", &res);
         }
     }
 }

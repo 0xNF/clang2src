@@ -2,18 +2,20 @@ use core::fmt::Display;
 use core::panic;
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde_json::Value;
+use std::borrow::BorrowMut;
 use std::fmt::Formatter;
 use tera::{Context, Tera};
 
 use serde::{Serialize, Serializer};
 
 use crate::lexer::{
-    CEnum, CFunction, CIdentifier, CStruct, CType, CVariableDeclaration, CVariableType, HeaderFile,
+    CEnum, CFunction, CStruct, CType, CVariableDeclaration, CVariableType, HeaderFile,
 };
-use crate::meta::{self, MetaValue, META_TOKEN};
+use crate::meta::{MetaValue, META_TOKEN};
 
 const C_PREFIX: &str = "C_";
-
+const C_FUNCTION_PREFIX: &str = "ffi_";
+const C_PARAMETER_NAME: &str = "c";
 #[derive(Serialize)]
 struct Data<'a> {
     library_path: &'a str,
@@ -52,7 +54,7 @@ impl<'a> Data<'a> {
             .map(|f| DartFunction::from(f, true))
             .collect();
 
-        let dart_classes: Vec<DartClass> = vec![];
+        let mut dart_classes: Vec<DartClass> = ffi_structs.iter().map(DartClass::from).collect();
 
         let native_free_functions: Vec<DartFunction> = header
             .functions
@@ -63,6 +65,65 @@ impl<'a> Data<'a> {
             })
             .map(|f| DartFunction::from(f, false))
             .collect();
+
+        /* Attach methods to classes */
+        for f in header.functions.iter().filter(|m| match &m.meta {
+            Some(meta) => meta.for_struct,
+            None => false,
+        }) {
+            let idxOfUnder = f.label.find('_').unwrap();
+            let struct_name = &f.label[..idxOfUnder];
+            let func_name = &f.label[idxOfUnder..];
+
+            let struct_name = DartIdentifier::make_label_for_custom_type(struct_name);
+            let func_name = DartIdentifier::new(func_name, None);
+
+            let on_class = dart_classes
+                .iter_mut()
+                .filter(|dc| dc.identifier.dart_label == struct_name)
+                .next()
+                .unwrap();
+
+            /* Find Main Constructor */
+            if f.meta.as_ref().map_or(false, |m| m.is_constructor) {
+                let meta = f.meta.to_owned().unwrap();
+                let df = DartFunction {
+                    is_private: false,
+                    on_class: Some(on_class.identifier.to_owned()),
+                    identifier: DartIdentifier::new_from_raw(&format!(
+                        "{}Create",
+                        func_name.dart_label
+                    )),
+                    c_function_name: Some(f.label.to_owned()),
+                    dart_comment: f.comment.to_owned().map(DartComment::from),
+                    is_void: false,
+                    throws: meta.throws,
+                    output_requires_pointer: true,
+                    is_async: false,
+                    parameters: f
+                        .parameters
+                        .iter()
+                        .filter(|param| match &param.meta {
+                            Some(param_meta) => !(param_meta.is_output || param_meta.is_error),
+                            None => true,
+                        })
+                        .map(|c| DartParameter::from(c, false))
+                        .collect(),
+                    meta: Some(meta.to_owned()),
+                    return_type: DartDataType::NativeType(DartNativeDataType::CustomClass(
+                        on_class.identifier.dart_label.to_owned(),
+                    )),
+                    ffi_return_type: None,
+                    is_return_struct: false,
+                    requires_ffi_function_pointers: false,
+                    annotations: vec![],
+                    modifiers: vec!["factory".to_owned()],
+                    is_factory: true,
+                    body: None,
+                };
+                on_class.functions.push(df);
+            }
+        }
 
         Data {
             library_path,
@@ -91,8 +152,8 @@ impl<'a> Data<'a> {
         context.insert("ffi_structs", &self.ffi_structs);
         context.insert("ffi_functions", &self.ffi_functions);
         context.insert("constants", &self.constants);
-        context.insert("dart_native_free_functions", &self.native_free_functions);
         context.insert("dart_classes", &self.dart_classes);
+        context.insert("dart_native_free_functions", &self.native_free_functions);
 
         context
     }
@@ -121,6 +182,14 @@ struct DataDartInformation {
 #[derive(Debug, Clone)]
 struct DartComment {
     inner: String,
+}
+
+impl DartComment {
+    fn from_raw(s: &str) -> Self {
+        DartComment {
+            inner: s.to_owned(),
+        }
+    }
 }
 impl Serialize for DartComment {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -254,29 +323,42 @@ impl DartIdentifier {
     fn new(label: &str, comment: Option<String>) -> Self {
         let dart_comment = comment.map(DartComment::from);
 
-        return DartIdentifier {
+        DartIdentifier {
             dart_label: Self::transform_label(label),
             dart_comment,
-        };
+        }
     }
 
     fn new_for_constant(label: &str, comment: Option<String>) -> Self {
-        return DartIdentifier {
+        DartIdentifier {
             dart_label: DartIdentifier::make_label_for_constant(label),
             dart_comment: comment.map(DartComment::from),
-        };
+        }
     }
 
-    fn new_for_custom_type(label: &str, comment: Option<String>) -> Self {
-        return DartIdentifier {
-            dart_label: Self::make_label_for_custom_type(label),
+    fn new_for_custom_type(label: &str, comment: Option<String>, for_ffi: bool) -> Self {
+        DartIdentifier {
+            dart_label: if for_ffi {
+                format!("{}{}", C_PREFIX, Self::make_label_for_custom_type(label))
+            } else {
+                Self::make_label_for_custom_type(label)
+            },
             dart_comment: comment.map(DartComment::from),
-        };
+        }
+    }
+
+    fn new_from_raw(label: &str) -> Self {
+        DartIdentifier {
+            dart_label: label.to_owned(),
+            dart_comment: None,
+        }
     }
 }
 
 #[derive(Clone, Serialize, Debug)]
 struct DartEnum {
+    /// Whether this class should be visible outside the generated pacage
+    is_private: bool,
     name: String,
     values: Vec<DartEnumOption>,
     dart_comment: Option<DartComment>,
@@ -296,6 +378,7 @@ impl From<&CEnum> for DartEnum {
             .collect();
 
         DartEnum {
+            is_private: false,
             name: enum_name,
             dart_comment,
             values,
@@ -327,6 +410,12 @@ impl DartEnumOption {
 /// A field, as in a member of a class
 #[derive(Serialize, Clone, Debug)]
 struct DartField {
+    /// Whether this field should be visible outside the generated pacage
+    is_private: bool,
+
+    /// Whether this field can be marked `field?` for non-nullability
+    is_nullable: bool,
+
     /// The actual identifier for this item
     /// e.g., 'access_tolen'
     identifier: DartIdentifier,
@@ -346,41 +435,84 @@ struct DartField {
     /// e.g., 'int', 'Pointer<Char>', etc
     kind: DartDataType,
 
+    meta: Option<MetaValue>,
+
+    /// Optionally in-line defined text for an immediate assignment
+    assign_statement: Option<String>,
+
     as_primitive_kind: DartDataType,
+}
+
+impl DartField {
+    /// Takes a DartField structured for use on an FFIStruct and returns a new DartField
+    /// fit for use on an externally facing Dart Class
+    fn into_class_field(&self) -> Self {
+        DartField {
+            is_nullable: self.meta.as_ref().map_or(false, |f| f.is_nullable),
+            is_private: self.is_private,
+            identifier: DartIdentifier::new_from_raw(&self.identifier.dart_label),
+            comment: self.comment.to_owned(),
+            annotations: vec![],
+            modifiers: vec!["final".to_owned()],
+            kind: self.kind.to_upper_type(self.meta.as_ref()),
+            meta: self.meta.to_owned(),
+            assign_statement: None,
+            as_primitive_kind: self.as_primitive_kind.to_owned(),
+        }
+    }
 }
 
 /// A parameter, as in an argument to a function
 #[derive(Serialize, Clone, Debug)]
 struct DartParameter {
+    /// Whether to mark the field type as nullable
+    is_nullable: bool,
+    /// whether to mark this item as 'required'
+    is_required: bool,
+    /// Fully qualified Dart Native type of this item,
     kind: DartDataType,
+
+    /// If true, dont drop this item with the free function after use
+    is_persistent: bool,
+
+    /// Whether this item needs to be wrapped in an additional Pointer<> container
     requires_pointer: bool,
+
+    /// The Dart FFI type that backs this type
     ffi_kind: DartFFIDataType,
+
+    /// Dart-ified label for this item
     identifier: DartIdentifier,
+
+    /// If set, the default value for constructions of the form {named_value = some_value}
     default_value: Option<DartValue>,
-    as_ffi_value: String,
+
+    /// When handed in as a function parameter, the transform to apply. Normally used for enums, which
+    /// need to be handed across FFI boundaries as `enumItem.value`
+    as_ffi_value: Option<String>,
+
+    /// The DartFFI type that this type can decays into
+    /// e.g.,
+    /// class, string, int, void, map => self
+    /// uri => string,
+    /// duration, datetime, enum => int,
     as_primitive_kind: DartDataType,
 }
 
 impl DartParameter {
     fn from(c: &CVariableDeclaration, as_ffi: bool) -> Self {
-        let identifier = if c.variable_type.is_struct {
-            DartIdentifier::new_for_custom_type(&c.label, None)
-        } else {
-            DartIdentifier::new(&c.label, None)
-        };
-
-        if !as_ffi {
-            println!("todo remove me for testing");
-        }
+        let identifier = DartIdentifier::new_from_raw(&c.label);
         let kind = DartDataType::from_meta(&c.label, &c.variable_type, &c.meta, as_ffi);
-        let ffi_kind = DartFFIDataType::from(c);
         DartParameter {
+            is_nullable: c.meta.as_ref().map_or(false, |f| f.is_nullable),
+            is_required: false,
+            is_persistent: c.variable_type.is_struct,
             ffi_kind: DartFFIDataType::from(c),
-            as_ffi_value: if matches!(c.variable_type.kind, CType::Enum(_)) {
-                format!("{}.value", identifier.dart_label)
+            as_ffi_value: Some(if matches!(c.variable_type.kind, CType::Enum(_)) {
+                format!("{}.getValueAsInt", identifier.dart_label)
             } else {
                 identifier.clone().dart_label
-            },
+            }),
             requires_pointer: kind.requires_pointer(),
             as_primitive_kind: kind.to_primitive(),
             identifier,
@@ -504,10 +636,274 @@ impl Display for DartVariable {
 }
 
 #[derive(Serialize, Debug)]
-struct DartClass {}
+struct DartConstructor {
+    is_private: bool,
+    identifier: DartIdentifier,
+    parameters: Vec<String>,
+    body: Option<String>,
+}
+
+#[derive(Serialize, Debug)]
+struct DartClass {
+    /// Whether this class should be visible outside the generated pacage
+    is_private: bool,
+    identifier: DartIdentifier,
+    backing_ffi_struct: Option<DartIdentifier>,
+    fields: Vec<DartField>,
+    functions: Vec<DartFunction>,
+    constructors: Vec<DartConstructor>,
+    /// Extends Classes
+    extends: Vec<String>,
+    /// Implements interfaces
+    implements: Vec<String>,
+    meta: Option<MetaValue>,
+}
+
+impl From<&DartFFIStruct> for DartClass {
+    fn from(f: &DartFFIStruct) -> Self {
+        let backing_struct_identifier = DartIdentifier::new_from_raw(f.label.as_str());
+        let class_identifier = DartIdentifier::new_from_raw(f.label.trim_start_matches(C_PREFIX));
+
+        let extends: Vec<String> = vec![];
+        let mut implements: Vec<String> = vec![];
+        let mut fields: Vec<DartField> = vec![];
+        let mut constructors: Vec<DartConstructor> = vec![];
+
+        /* Add actual class fieldss */
+        fields.append(
+            &mut f
+                .fields
+                .iter()
+                .map(|df| df.into_class_field())
+                .collect::<Vec<DartField>>(),
+        );
+
+        if f.is_opaque {
+            /* _fromCPtr */
+            constructors.push(DartConstructor {
+                is_private: true,
+                parameters: vec!["_selfPtr".to_owned()],
+                identifier: DartIdentifier::new_from_raw("fromCPtr"),
+                body: Some(
+                    "
+                _finalizer.attach(this, _selfPtr.cast(), detach: this);
+                "
+                    .to_owned(),
+                ),
+            });
+        } else {
+            /* _fromFields */
+            constructors.push(DartConstructor {
+                is_private: true,
+                identifier: DartIdentifier::new_from_raw("fromFields"),
+                parameters: fields
+                    .iter()
+                    .map(|f| f.identifier.dart_label.to_owned())
+                    .collect(),
+                body: None,
+            });
+        }
+
+        let mut functions: Vec<DartFunction> = vec![/* fromCPointerPointer */ DartFunction {
+            is_private: false,
+            modifiers: vec!["factory".to_owned()],
+            annotations: vec![],
+            c_function_name: None,
+            dart_comment: Some(DartComment::from_raw(&format!(
+                "/// Creates an instance of this class from a Pointer<Pointer<{}>>",
+                f.label
+            ))),
+            identifier: DartIdentifier::new_from_raw("_fromCPointerPointer"),
+            ffi_return_type: None,
+            is_async: false,
+            is_return_struct: false,
+            is_void: false,
+            output_requires_pointer: false,
+            requires_ffi_function_pointers: false,
+            throws: false,
+            on_class: Some(class_identifier.to_owned()),
+            is_factory: true,
+            return_type: DartDataType::NativeType(DartNativeDataType::Void),
+            meta: None,
+            parameters: {
+                let ffi_kind = DartFFIDataType::Pointer {
+                    sub_type: Box::new(DartFFIDataType::Pointer {
+                        sub_type: Box::new(DartFFIDataType::Void),
+                    }),
+                };
+                let dkind = DartDataType::FFIType(ffi_kind.to_owned());
+                vec![DartParameter {
+                    is_nullable: false,
+                    is_required: false,
+                    is_persistent: false,
+                    default_value: None,
+                    requires_pointer: false,
+                    identifier: DartIdentifier::new_from_raw("voidPtr"),
+                    as_ffi_value: None,
+                    as_primitive_kind: dkind.to_primitive(),
+                    kind: dkind.clone(),
+                    ffi_kind,
+                }]
+            },
+            body: Some(
+                if f.is_opaque {
+                    format!(
+                        "
+                ffi.Pointer<ffi.Pointer<{}>> ptr = voidPtr.cast();
+                final _innerPtr = ptr.value;
+                return {}._fromCPtr(_innerPtr);
+                    ",
+                        backing_struct_identifier.dart_label, class_identifier.dart_label
+                    )
+                } else {
+                    format!(
+                        "
+                ffi.Pointer<ffi.Pointer<{}>> ptr = voidPtr.cast();
+                final st = ptr.value.ref;
+                return {}._fromCStruct(st);",
+                        backing_struct_identifier.dart_label, class_identifier.dart_label,
+                    )
+                }
+                .to_owned(),
+            ),
+        }];
+
+        /* fromCStruct */
+        if !f.is_opaque {
+            functions.push(DartFunction {
+                is_private: false,
+                modifiers: vec!["factory".to_owned()],
+                c_function_name: None,
+                dart_comment: Some(DartComment::from_raw(
+                    "/// Creates an instance of this class from a struct reference",
+                )),
+                identifier: DartIdentifier::new_from_raw("_fromCStruct"),
+                annotations: vec![],
+                ffi_return_type: None,
+                is_async: false,
+                is_return_struct: false,
+                is_void: false,
+                output_requires_pointer: false,
+                requires_ffi_function_pointers: false,
+                throws: false,
+                on_class: Some(class_identifier.to_owned()),
+                is_factory: true,
+                return_type: DartDataType::NativeType(DartNativeDataType::Void),
+                meta: None,
+                parameters: {
+                    let ffi_kind = DartFFIDataType::Struct(backing_struct_identifier.to_owned());
+                    let ddt = DartDataType::FFIType(ffi_kind.to_owned());
+                    vec![DartParameter {
+                        is_required: false,
+                        is_nullable: false,
+                        is_persistent: false,
+                        as_ffi_value: None,
+                        default_value: None,
+                        requires_pointer: false,
+                        as_primitive_kind: ddt.to_owned(),
+                        kind: ddt,
+                        identifier: DartIdentifier::new_from_raw(C_PARAMETER_NAME),
+                        ffi_kind,
+                    }]
+                },
+                body: None,
+            })
+        }
+
+        if let Some(m) = &f.meta {
+            /* Make Self Pointer if necessary */
+            if m.is_persistent {
+                /* Make Self Ptr Field */
+                {
+                    let dkind = DartDataType::FFIType(DartFFIDataType::Pointer {
+                        sub_type: Box::new(DartFFIDataType::Struct(DartIdentifier::new_from_raw(
+                            f.label.as_str(),
+                        ))),
+                    });
+
+                    let _self_ptr: DartField = DartField {
+                        is_nullable: m.is_nullable,
+                        is_private: true,
+                        modifiers: vec![],
+                        annotations: vec![],
+                        as_primitive_kind: dkind.to_owned(),
+                        comment: f.comment.to_owned(),
+                        identifier: DartIdentifier::new_from_raw("selfPtr"),
+                        meta: None,
+                        kind: dkind,
+                        assign_statement: None,
+                    };
+
+                    fields.push(_self_ptr);
+                }
+
+                /* Make _IWithPtr function */
+                implements.push("_IWithPtr".to_owned());
+
+                functions.push(DartFunction {
+                    is_private: false,
+                    on_class: Some(class_identifier.to_owned()),
+                    identifier: DartIdentifier::new_from_raw("getPointer"),
+                    c_function_name: None,
+                    dart_comment: None,
+                    is_void: false,
+                    throws: false,
+                    output_requires_pointer: false,
+                    is_async: false,
+                    parameters: vec![],
+                    meta: None,
+                    return_type: DartDataType::FFIType(DartFFIDataType::Pointer {
+                        sub_type: Box::new(DartFFIDataType::Void),
+                    }),
+                    ffi_return_type: None,
+                    is_return_struct: false,
+                    requires_ffi_function_pointers: false,
+                    annotations: vec!["@override".to_owned()],
+                    modifiers: vec![],
+                    is_factory: false,
+                    body: Some("return _selfPtr.cast();".to_owned()),
+                });
+
+                /* make Finalizable for free'ing  */
+                implements.push("ffi.Finalizable".to_owned());
+                fields.push(DartField {
+                    is_nullable: false,
+                    is_private: true,
+                    identifier: DartIdentifier::new_from_raw("finalizer"),
+                    comment: Some(DartComment::from_raw("/// Pointer to the backing `free` function which disposes the backing pointer when this dart object is GC'd")),
+                    annotations: vec![],
+                    modifiers: vec!["static".to_owned(), "final".to_owned()],
+                    kind: DartDataType::FFIType(DartFFIDataType::NativeFinalizer),
+                    as_primitive_kind: DartDataType::FFIType(DartFFIDataType::NativeFinalizer),
+                    assign_statement: Some(format!("ffi.NativeFinalizer({}{}_freePtr.cast())", C_FUNCTION_PREFIX, backing_struct_identifier.dart_label.trim_start_matches(C_PREFIX))),
+                    meta: Some({
+                        let mut meta_value: MetaValue = MetaValue::new();
+                        meta_value.is_static = true;
+                        meta_value
+                    }),
+                })
+            }
+        }
+
+        DartClass {
+            is_private: false,
+            identifier: class_identifier,
+            backing_ffi_struct: Some(backing_struct_identifier),
+            constructors,
+            extends,
+            implements,
+            fields,
+            /// appended to at a later stage, after all the functions have been parsed
+            functions,
+            meta: f.meta.to_owned(),
+        }
+    }
+}
 
 #[derive(Serialize, Debug)]
 struct DartFunction {
+    /// Whether this function should be visible outside the generated pacage
+    is_private: bool,
     /// Whether this function should be attached to a class
     on_class: Option<DartIdentifier>,
     /// Dart friendly label for this function
@@ -544,6 +940,17 @@ struct DartFunction {
 
     /// Whether this function needs additional helper functions in the form of `_{func}Ptr = _lookup...` and `_{func}` = _{func}Ptr.asFunction...`
     requires_ffi_function_pointers: bool,
+
+    /// e.g., '@override'
+    annotations: Vec<String>,
+
+    /// e.g., 'factory'
+    modifiers: Vec<String>,
+
+    is_factory: bool,
+
+    /// Optional concrete implenetation of this method
+    body: Option<String>,
 }
 
 impl DartFunction {
@@ -555,12 +962,24 @@ impl DartFunction {
         let mut requires_pointer: bool = false;
 
         DartFunction {
+            is_private: false,
             on_class: None,
-            identifier: DartIdentifier::new(c.label.as_str(), None),
+            is_factory: false,
+            identifier: {
+                let label = c.label.as_str();
+                if as_ffi {
+                    DartIdentifier::new_from_raw(&format!("{}{}", C_FUNCTION_PREFIX, label))
+                } else {
+                    DartIdentifier::new_from_raw(label)
+                }
+            },
             c_function_name: Some(c.label.to_owned()),
             dart_comment: c.comment.to_owned().map(DartComment::from),
             is_void: matches!(c.return_type.kind, CType::Void),
             is_async: false,
+            modifiers: vec![],
+            annotations: vec![],
+            body: None,
             parameters: {
                 if !as_ffi {
                     throws = true;
@@ -648,6 +1067,9 @@ impl DartFunction {
 /// The FFI backing structure for a Dart class
 #[derive(Serialize)]
 struct DartFFIStruct {
+    /// Whether this class should be visible outside the generated pacage
+    is_private: bool,
+
     /// sets `extends ffi.Opaque` if true
     /// which is true if this struct has no fields
     /// otherwise sets `extends ffi.Struct`
@@ -660,6 +1082,14 @@ struct DartFFIStruct {
     /// Member fields on this FFI struct
     /// Annoations will be dealt with at template generation time
     fields: Vec<DartField>,
+
+    /// Extends Classes
+    extends: Vec<String>,
+
+    /// Implements interfaces
+    implements: Vec<String>,
+
+    meta: Option<MetaValue>,
 
     comment: Option<DartComment>,
 }
@@ -686,16 +1116,21 @@ impl From<&CStruct> for DartFFIStruct {
                 };
 
                 DartField {
+                    is_nullable: c.meta.as_ref().map_or(false, |f| f.is_nullable),
+                    is_private: false,
                     identifier: DartIdentifier::new(&decl.label, None),
                     comment: decl.comment.to_owned().map(DartComment::from),
                     annotations: vec![ffi_kind.get_dart_annotation_string()],
                     modifiers: vec!["external".to_owned()],
                     as_primitive_kind: kind.for_struct(),
+                    assign_statement: None,
+                    meta: decl.meta.to_owned(),
                     kind,
                 }
             })
             .collect();
         DartFFIStruct {
+            is_private: false,
             is_opaque: c.declarations.len() == 0,
             label: format!(
                 "{}{}",
@@ -704,6 +1139,13 @@ impl From<&CStruct> for DartFFIStruct {
             ),
             comment,
             fields,
+            meta: c.meta.to_owned(),
+            extends: vec![if c.declarations.len() == 0 {
+                "ffi.Opaque".to_owned()
+            } else {
+                "ffi.Struct".to_owned()
+            }],
+            implements: vec![],
         }
     }
 }
@@ -716,6 +1158,7 @@ enum DartFFIDataType {
     Struct(DartIdentifier),
     Handle,
     NativeFunction { sub_type: Box<DartFFIDataType> },
+    NativeFinalizer,
     Char,
     Void,
     Int8,
@@ -730,6 +1173,49 @@ enum DartFFIDataType {
     Float,
     Double,
     Bool,
+}
+
+impl Into<DartNativeDataType> for &DartFFIDataType {
+    fn into(self) -> DartNativeDataType {
+        (self.to_owned()).into()
+    }
+}
+
+impl Into<DartNativeDataType> for DartFFIDataType {
+    fn into(self) -> DartNativeDataType {
+        match &self {
+            DartFFIDataType::Pointer { sub_type } => (*sub_type.to_owned()).into(),
+            DartFFIDataType::Opaque(ident) => DartNativeDataType::CustomEnum(
+                DartIdentifier::make_label_for_custom_type(&ident.dart_label),
+            ),
+            DartFFIDataType::Struct(ident) => {
+                DartNativeDataType::CustomClass(DartIdentifier::make_label_for_custom_type(
+                    &ident.dart_label.trim_start_matches(C_PREFIX),
+                ))
+            }
+            DartFFIDataType::NativeType
+            | DartFFIDataType::Handle
+            | DartFFIDataType::NativeFunction { sub_type: _ }
+            | DartFFIDataType::NativeFinalizer => panic!(
+                "Cannot convert this FFI Type into a Dart: Native Type: {}",
+                self
+            ),
+            DartFFIDataType::Char => DartNativeDataType::String,
+            DartFFIDataType::Void => DartNativeDataType::Void,
+            DartFFIDataType::Int8
+            | DartFFIDataType::Int16
+            | DartFFIDataType::Int32
+            | DartFFIDataType::Int64
+            | DartFFIDataType::UIntPtr
+            | DartFFIDataType::UInt8
+            | DartFFIDataType::Uint16
+            | DartFFIDataType::UInt32
+            | DartFFIDataType::UInt64 => DartNativeDataType::Int,
+            DartFFIDataType::Float => DartNativeDataType::Double,
+            DartFFIDataType::Double => DartNativeDataType::Double,
+            DartFFIDataType::Bool => DartNativeDataType::Bool,
+        }
+    }
 }
 
 impl Serialize for DartFFIDataType {
@@ -755,6 +1241,7 @@ impl From<&CType> for DartFFIDataType {
             CType::Struct(c) => DartFFIDataType::Struct(DartIdentifier::new_for_custom_type(
                 &c.identifier.label,
                 None,
+                true,
             )),
             CType::Void => DartFFIDataType::Void,
             CType::SignedShort(_) | CType::Int8T(_) => DartFFIDataType::Int8,
@@ -803,6 +1290,7 @@ impl DartFFIDataType {
             | DartFFIDataType::NativeFunction { sub_type: _ }
             | DartFFIDataType::Pointer { sub_type: _ }
             | DartFFIDataType::Char
+            | DartFFIDataType::NativeFinalizer
             | DartFFIDataType::Void => "".to_owned(),
             DartFFIDataType::Int64
             | DartFFIDataType::UIntPtr
@@ -825,6 +1313,7 @@ impl DartFFIDataType {
         match &self {
             DartFFIDataType::NativeType
             | DartFFIDataType::Handle
+            | DartFFIDataType::NativeFinalizer
             | DartFFIDataType::NativeFunction { sub_type: _ } => {
                 panic!("cannot check pointerness of this type: {}", &self)
             }
@@ -854,13 +1343,10 @@ impl Display for DartFFIDataType {
         match &self {
             DartFFIDataType::Char => f.write_str("ffi.Char"),
             DartFFIDataType::Void => f.write_str("ffi.Void"),
+            DartFFIDataType::NativeFinalizer => f.write_str("ffi.NativeFinalizer"),
             DartFFIDataType::NativeType => f.write_str("ffi.NativeType"),
             DartFFIDataType::Opaque(_) => f.write_str("ffi.Opaque"),
-            DartFFIDataType::Struct(ident) => f.write_fmt(format_args!(
-                "{}{}",
-                C_PREFIX,
-                DartIdentifier::make_label_for_custom_type(&ident.dart_label)
-            )),
+            DartFFIDataType::Struct(ident) => f.write_fmt(format_args!("{}", ident.dart_label,)),
             DartFFIDataType::Handle => f.write_str("ffi.Handle"),
             DartFFIDataType::NativeFunction { sub_type } => {
                 f.write_fmt(format_args!("ffi.NativeFunction<{}>", sub_type))
@@ -894,6 +1380,7 @@ enum DartNativeDataType {
     List {
         sub_type: Box<DartNativeDataType>,
     },
+    Bool,
     Uri,
     Duration,
     DateTime,
@@ -942,9 +1429,12 @@ impl From<&CVariableDeclaration> for DartNativeDataType {
             None => DartNativeDataType::from(&c.variable_type),
             Some(meta_value) => {
                 if c.variable_type.is_struct {
-                    DartNativeDataType::CustomClass(DartIdentifier::make_label_for_custom_type(
-                        &c.label,
-                    ))
+                    match &c.variable_type.kind {
+                        CType::Struct(s) => DartNativeDataType::CustomClass(
+                            DartIdentifier::make_label_for_custom_type(&s.identifier.label),
+                        ),
+                        _ => panic!("Expected to extract type name of struct, got something else"),
+                    }
                 } else {
                     DartNativeDataType::from(meta_value)
                 }
@@ -972,7 +1462,8 @@ impl DartNativeDataType {
             }
             | DartNativeDataType::List { sub_type: _ } => true,
 
-            DartNativeDataType::Int
+            DartNativeDataType::Bool
+            | DartNativeDataType::Int
             | DartNativeDataType::Double
             | DartNativeDataType::CustomEnum(_)
             | DartNativeDataType::Duration => false,
@@ -1036,6 +1527,7 @@ impl From<&CType> for DartNativeDataType {
 impl Display for DartNativeDataType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
+            DartNativeDataType::Bool => f.write_str("bool"),
             DartNativeDataType::Int => f.write_str("int"),
             DartNativeDataType::String => f.write_str("String"),
             DartNativeDataType::Double => f.write_str("double"),
@@ -1097,15 +1589,21 @@ impl DartDataType {
                 | DartFFIDataType::Handle
                 | DartFFIDataType::NativeFunction { sub_type: _ }
                 | DartFFIDataType::Void => self.to_owned(),
+                DartFFIDataType::NativeFinalizer => {
+                    panic!("Native Finalizer not valid on for_struct")
+                }
             },
         }
     }
+
+    /// Deconstructs a Complex type (i.e., Duration, DateTime) into its underlying type (i.e, Duration -> int, Url -> String)
     fn to_primitive(&self) -> Self {
         match &self {
             DartDataType::NativeType(nt) => match &nt {
                 DartNativeDataType::CustomClass(_)
                 | DartNativeDataType::String
                 | DartNativeDataType::Int
+                | DartNativeDataType::Bool
                 | DartNativeDataType::Void
                 | DartNativeDataType::Map {
                     key_type: _,
@@ -1127,6 +1625,58 @@ impl DartDataType {
         }
     }
 
+    /// Converts a simple type into its complex form via the Meta object provided
+    /// i.e., String + IsUrl => Uri
+    /// ffi.Char -> String, etc
+    fn to_upper_type(&self, meta: Option<&MetaValue>) -> Self {
+        DartDataType::NativeType(match &meta {
+            Some(m) => {
+                if m.is_url {
+                    DartNativeDataType::Uri
+                } else if m.is_datetime {
+                    DartNativeDataType::DateTime
+                } else if m.is_duration {
+                    DartNativeDataType::Duration
+                } else if m.is_string {
+                    DartNativeDataType::String
+                } else if m.is_list {
+                    let inner_type: DartNativeDataType = match &self {
+                        /* already native type, skip */
+                        DartDataType::NativeType(nt) => nt.to_owned(),
+                        /* auto convert to native type */
+                        DartDataType::FFIType(ft) => ft.into(),
+                    };
+                    DartNativeDataType::List {
+                        sub_type: Box::new(inner_type),
+                    }
+                } else if m.is_hashmap {
+                    // TODO(nf, 04/20/23): Currently the MetaValues only accept string keys
+                    let key = DartNativeDataType::String;
+                    let value = DartNativeDataType::String;
+                    DartNativeDataType::Map {
+                        key_type: Box::new(key),
+                        value_type: Box::new(value),
+                    }
+                } else {
+                    match &self {
+                        /* already native type, skip */
+                        DartDataType::NativeType(nt) => nt.to_owned(),
+                        /* auto convert to native type */
+                        DartDataType::FFIType(ft) => ft.into(),
+                    }
+                }
+            }
+            None => {
+                match &self {
+                    /* already native type, skip */
+                    DartDataType::NativeType(nt) => nt.to_owned(),
+                    /* auto convert to native type */
+                    DartDataType::FFIType(ft) => ft.into(),
+                }
+            }
+        })
+    }
+
     fn from_meta(
         label: &str,
         cvariable: &CVariableType,
@@ -1138,18 +1688,19 @@ impl DartDataType {
         } else {
             match meta {
                 Some(m) => {
-                    // if m.is_empty() {
-                    //     DartDataType::from(cvariable)
-                    // } else {
                     if cvariable.is_struct {
                         DartDataType::NativeType(DartNativeDataType::CustomClass(
                             DartIdentifier::make_label_for_custom_type(label),
                         ))
+                    } else if let CType::Enum(e) = &cvariable.kind {
+                        DartDataType::NativeType(DartNativeDataType::CustomEnum(
+                            DartIdentifier::make_label_for_custom_type(&e.identifier.label),
+                        ))
                     } else {
                         DartDataType::NativeType(DartNativeDataType::from(m))
                     }
-                    // }
                 }
+                .to_upper_type(meta.as_ref()),
                 None => DartDataType::NativeType(DartNativeDataType::from(cvariable)),
             }
         }
@@ -1226,11 +1777,13 @@ pub fn generate(header: HeaderFile, library_path: &str, library_name: &str) -> S
     let template_tuples = vec![
         ("generated_header", TEMPLATE_GENERATED_HEADER),
         ("dart_header", TEMPLATE_DART_HEADER),
+        ("dart_library_exception", TEMPLATE_LIBRARY_EXCEPTION),
         ("c_constants", TEMPLATE_C_CONSTANTS),
         ("dart_constants", TEMPLATE_DART_CONSTANTS),
         ("dart_enums", TEMPLATE_DART_ENUMS),
         ("dart_ffi_structs", TEMPLATE_FFI_STRUCTS),
         ("dart_ffi_functions", TEMPLATE_FFI_FUNCTIONS),
+        ("dart_classes", TEMPLATE_DART_CLASSES),
         ("dart_native_free_functions", TEMPLATE_DART_NATIVE_FUNCTIONS),
         ("dart_pointer_for_type", TEMPLATE_POINTER_FOR_TYPE),
         ("utilities", TEMPLATE_UTILITY_FUNCTIONS),
@@ -1262,6 +1815,15 @@ const TEMPLATE_DART_HEADER: &str = "
 {% endif %}
 ";
 
+const TEMPLATE_LIBRARY_EXCEPTION: &str = "
+class {{meta.library_name}}Exception implements Exception {
+    final String msg;
+    final int code;
+    
+    const {{meta.library_name}}Exception(this.msg, this.code);
+}
+";
+
 const TEMPLATE_C_CONSTANTS: &str = "
 /* Region: C Constants */
 const int C_NULL = 0;
@@ -1283,12 +1845,13 @@ const TEMPLATE_FFI_STRUCTS: &str = "
 {% if ffi_structs | length %}
 /* Region: FFI Structs */
 {% for ffi_struct in ffi_structs %}
-class {{ ffi_struct.label }} extends {% if ffi_struct.is_opaque %}ffi.Opaque{% else %}ffi.Struct{% endif %} {
+
+class {% if ffi_struct.is_private %}_{% endif %}{{ ffi_struct.label }} {% if ffi_struct.extends | length %} extends {% for extender in ffi_struct.extends %} {{ extender }}{% if not loop.last %}, {% endif %} {% endfor %} {% endif %}  {% if ffi_struct.implements | length %} implements {% for implementer in ffi_struct.implements %} {{ implementer }}{% if not loop.last %}, {% endif %} {% endfor %} {% endif %}{
     {% for field in ffi_struct.fields %}
     {% if field.comment is some %}{{ field.comment }}{% endif %}
     {% for annotation in field.annotations %}{{ annotation }}
     {% endfor %}
-    {% for modifier in field.modifiers %} {{ modifier }} {% endfor %}{{ field.as_primitive_kind }} {{field.identifier.dart_label}};
+    {% for modifier in field.modifiers %} {{ modifier }} {% endfor %}{{ field.as_primitive_kind }} {% if field.is_private %}_{% endif %}{{field.identifier.dart_label}};
     {% endfor %}
 }
 {% endfor %}
@@ -1299,9 +1862,14 @@ const TEMPLATE_DART_ENUMS: &str = "
 {% block title %}{% endblock %}
 {% if enums | length %}
 /* Region: FFI Enums */
+
+abstract class _IAsFFIInt {
+    int get getValueAsInt;
+  }
+
 {% for enum in enums %}
 {% if enum.dart_comment is some %}{{ enum.dart_comment }}{% endif %}
-enum {{ enum.name }} {
+enum {% if enum.is_private %}_{% endif %}{{ enum.name }} implements _IAsFFIInt {
     {% for value in enum.values %}
     {% if value.dart_comment is some %}{{ value.dart_comment }}{% endif %}
     {{value.label}}({{ value.value }}),
@@ -1311,6 +1879,9 @@ enum {{ enum.name }} {
     final int value;
 
     const {{enum.name}}(this.value);
+
+    @override
+    int get getValueAsInt => value;
 }
 {% endfor %}
 {% endif %}
@@ -1321,16 +1892,21 @@ const TEMPLATE_FFI_FUNCTIONS: &str = "
 {% if ffi_functions | length %}
 /* Region: FFI Free Functions */
 {% for ffi_function in ffi_functions %}
-{{ ffi_function.return_type }} {{ffi_function.identifier.dart_label}}(
+{% if ffi_function.dart_comment is some %}{{ ffi_function.dart_comment }}{% endif %}
+{{ ffi_function.return_type }} {% if ffi_function.is_private %}_{% endif %}{{ffi_function.identifier.dart_label}}(
     {% for parameter in ffi_function.parameters %}
-    {{ parameter.kind }} {{ parameter.identifier.dart_label }},
+    {% if parameter.is_required %}required {% endif %}{{ parameter.kind }} {{ parameter.identifier.dart_label }},
     {% endfor %}
 ) {
+    {% if ffi_function.body is some %}
+    {{ ffi_function.body }}
+    {% else %}
     return _{{ffi_function.identifier.dart_label}}(
         {% for parameter in ffi_function.parameters %}
         {{ parameter.as_ffi_value }},
         {% endfor %}
     );
+    {% endif %}
 }
 
 final {{ ffi_function.identifier.dart_label }}Ptr = _lookup<ffi.NativeFunction<{{ ffi_function.ffi_return_type }} Function({% for parameter in ffi_function.parameters %} {{ parameter.ffi_kind }}, {% endfor %}) >>('{{ ffi_function.c_function_name }}');
@@ -1339,72 +1915,171 @@ final _{{ ffi_function.identifier.dart_label }} = {{ ffi_function.identifier.dar
 {% endif %}
 ";
 
+const TEMPLATE_DART_CLASSES: &str = "
+{% block title %}{% endblock %}
+{% if dart_classes | length %}
+/* Region: Dart Classes for use by the end-user */
+    {% for class in dart_classes %}
+class {% if class.is_private %}_{% endif %}{{ class.identifier.dart_label}} {% if class.implements | length %} implements {% for implementer in class.implements %} {{ implementer }}{% if not loop.last %}, {% endif %} {% endfor %} {% endif %} {% if class.extends | length %} extends {% for extender in class.extends %} {{ extender }}{% if not loop.last %}, {% endif %} {% endfor %} {% endif %} {
+    {% if class.fields | length %}
+    /* Fields */
+    {% for field in class.fields %}
+    {% if field.comment is some %}{{ field.comment }}{% endif %}
+    {% for annotation in field.annotations %}{{ annotation }}
+    {% endfor %}
+    {% for modifier in field.modifiers %} {{ modifier }} {% endfor %}{{ field.kind }}{% if field.is_nullable %}?{% endif %} {% if field.is_private %}_{% endif %}{{field.identifier.dart_label}}{% if field.assign_statement is some %} = {{ field.assign_statement }}{% endif %};
+    {% endfor %}
+    {% endif %}
+
+    {% if class.constructors | length %}
+        /* Constructors */
+        {% for constructor in class.constructors %}
+        {% if class.is_private %}_{% endif %}{{ class.identifier.dart_label }}.{% if constructor.is_private %}_{% endif %}{{constructor.identifier.dart_label}}({% for parameter in constructor.parameters %}this.{{ parameter }}, {% endfor %}) {% if constructor.body is some %} {
+            {{ constructor.body }}
+        }{% else %};{% endif %}
+        {% endfor %}
+    {% endif %}
+
+    {% if class.functions | length %}
+    /* Functions */
+    {% for function in class.functions %}
+        {% if function.dart_comment is some %}{{ function.dart_comment }}{% endif %}
+        {% for annotation in function.annotations %}{{ annotation }}{% endfor %}
+        {% for modifier in function.modifiers %}{{ modifier }} {% endfor %} {% if function.is_factory %} {% elif function.is_void %} void {% else %} {{ function.return_type }} {% endif %} {% if function.is_factory%}{{ class.identifier.dart_label }}.{% endif %}{% if function.is_private %}_{% endif %}{{ function.identifier.dart_label}}({% for parameter in function.parameters %} {% if parameter.is_required %}required {% endif %}{{ parameter.kind }} {{ parameter.identifier.dart_label}}, {% endfor %}) {
+            {% if function.body is some %}
+        {{ function.body }}
+            {% elif function.identifier.dart_label is containing(\"fromCStruct\") %}
+            {% for field in class.fields %}
+        final {{ field.kind }}{% if field.is_nullable %}?{% endif %} _c{{field.identifier.dart_label}} = _transformFromFFI(c.{{field.identifier.dart_label}}, {% if field.meta is some %} {% if field.meta.is_list %}isList: true, {% elif field.meta.is_url %}isUri: true,{% elif field.meta.is_duration%}isDuration: true, {% elif field.meta.is_datetime%}isDateTime: true,  {% endif %}{% endif %});
+            {% endfor %}
+            final _{{class.identifier.dart_label}}Ret = {{ class.identifier.dart_label }}._fromFields({% for field in class.fields %}_c{{ field.identifier.dart_label }}, {% endfor %});
+            return _{{class.identifier.dart_label}}Ret;
+            {% elif function.meta is some and function.meta.is_constructor %}
+                final c{{function.c_function_name}}OutputPtr = _getPointerForType<{{ class.identifier.dart_label }}>();
+                {% if function.throws %}
+                final ffi.Pointer<ffi.Pointer<ffi.Char>> cErrPtr = _getPointerForType<String>().cast();
+                {% endif %}
+                {% for parameter in function.parameters %}
+                final dynamic c{{ parameter.identifier.dart_label }}ForFFI = _transformToFFI({{ parameter.identifier.dart_label }});
+                {% endfor %}
+                /* call native function */
+                int errCode = ffi_{{ function.c_function_name }}(
+                        c{{function.c_function_name}}OutputPtr.cast(),
+                        {% for parameter in function.parameters %}
+                        c{{ parameter.identifier.dart_label }}ForFFI,
+                        {% endfor %}
+                    cErrPtr,
+                );
+
+                /* Check error code */
+                if (errCode != C_FALSE) {
+                    /* free pointers if required  */
+                    {% for parameter in function.parameters %}
+                        {% if parameter.requires_pointer and not parameter.is_persistent %}
+                    calloc.free(c{{ parameter.identifier.dart_label }}ForFFI);
+                        {% endif %}
+                    {% endfor %}
+                    {% if function.output_requires_pointer %}
+                    calloc.free(c{{function.c_function_name}}OutputPtr);
+                    {% endif %}
+            
+                    /* throw final Exception */
+                    throw {{meta.library_name}}Exception(_getDartStringFromDoublePtr(cErrPtr), errCode);
+                }
+            
+                /* Free allocated pointers */
+                    {% for parameter in function.parameters %}
+                        {% if parameter.requires_pointer and not parameter.is_persistent %}
+                calloc.free(c{{ parameter.identifier.dart_label}}ForFFI);
+                        {% endif %}
+                    {% endfor %}
+                    {% if function.throws %}
+                calloc.free(cErrPtr);
+                    {% endif %}
+            
+                /* return final value */
+                return  {{ class.identifier.dart_label }}._fromCPointerPointer(c{{function.c_function_name}}OutputPtr.cast());
+            {% else %}
+        'TODO: ayy lmao put that body here boi';
+        {% endif %}
+    }
+    {% endfor %}
+    {% endif %}
+}
+    {% endfor %}
+{% endif %}
+";
+
 const TEMPLATE_DART_NATIVE_FUNCTIONS: &str = "
 {% block title %}{% endblock %}
 {% if dart_native_free_functions | length %}
 /* Region: Dart Free Functions */
 {% for function in dart_native_free_functions %}
-{{ function.return_type }} {{ function.identifier.dart_label}}({% for parameter in function.parameters %} {{ parameter.kind }} {{ parameter.identifier.dart_label }}, {% endfor %}) {
-    {% if function.throws %}
+{% for annotation in function.annotations %}{{ annotation }}{% endfor %}
+{{ function.return_type }} {% if function.is_private %}_{% endif %}{{ function.identifier.dart_label}}({% for parameter in function.parameters %} {% if parameter.is_required %}required {% endif %}{{ parameter.kind }} {{ parameter.identifier.dart_label }}, {% endfor %}) {
+    {% if function.body is some %}
+    {{ function.body }}
+    {% else %}
+        {% if function.throws %}
     /* Get error pointer in case function returns failure */
-    final cErrPtr = _getEmptyStringPointer();
+    final ffi.Pointer<ffi.Pointer<ffi.Char>> cErrPtr = _getPointerForType<String>().cast();
 
-    {% if function.parameters | length %}
+            {% if function.parameters | length %}
     /* get pointer types for items that require it*/
-    {% for parameter in function.parameters %}
-    {% if parameter.requires_pointer %}
-    final c{{ parameter.identifier.dart_label}}Ptr = getPointerForData({{ parameter.identifier.dart_label }});
-    {% endif %}
-    {% endfor %}
-    {% endif %}
+                {% for parameter in function.parameters %}
+                    {% if parameter.requires_pointer %}
+    final c{{ parameter.identifier.dart_label}}Ptr = _getPointerForData({{ parameter.identifier.dart_label }});
+                    {% endif %}
+                {% endfor %}
+            {% endif %}
 
-    {% if function.output_requires_pointer %}
+            {% if function.output_requires_pointer %}
     /* get Output Pointer type */
     final c{{function.c_function_name}}OutputPtr = _getPointerForType<{{ function.return_type }}>();
-    {% endif %}
+            {% endif %}
 
     /* call native function */
-    int errCode = _{{ function.identifier.dart_label }}(
-        {% if function.output_requires_pointer %}
+    int errCode = ffi_{{ function.identifier.dart_label }}(
+            {% if function.output_requires_pointer %}
         c{{function.c_function_name}}OutputPtr.cast(),
-        {% endif %}
-        {% for parameter in function.parameters %}
-        {% if parameter.requires_pointer %} c{{ parameter.identifier.dart_label }}Ptr.cast(){% else %} {{ parameter.identifier.dart_label }}{% endif %},
-        {% endfor %}
+            {% endif %}
+            {% for parameter in function.parameters %}
+                {% if parameter.requires_pointer %} c{{ parameter.identifier.dart_label }}Ptr.cast(){% else %} {{ parameter.identifier.dart_label }}{% endif %},
+            {% endfor %}
         cErrPtr,
     );
 
     /* Check error code */
-    if errCode != C_FALSE {
+    if (errCode != C_FALSE) {
         /* free pointers if required  */
         {% for parameter in function.parameters %}
-        {% if parameter.requires_pointer %}
+            {% if parameter.requires_pointer and not parameter.is_persistent %}
         calloc.free(c{{ parameter.identifier.dart_label }}Ptr);
-        {% endif %}
+            {% endif %}
         {% endfor %}
         {% if function.output_requires_pointer %}
         calloc.free(c{{function.c_function_name}}OutputPtr);
         {% endif %}
 
         /* throw final Exception */
-        throw OAuthToolException(_getDartStringFromDoublePtr(cErrPtr), errCode);
+        throw {{meta.library_name}}Exception(_getDartStringFromDoublePtr(cErrPtr), errCode);
     }
 
     /* Free allocated pointers */
-    {% for parameter in function.parameters %}
-    {% if parameter.requires_pointer %}
+        {% for parameter in function.parameters %}
+            {% if parameter.requires_pointer and not parameter.is_persistent %}
     calloc.free(c{{ parameter.identifier.dart_label}}Ptr);
-    {% endif %}
-    {% endfor %}
-    {% if function.throws %}
+            {% endif %}
+        {% endfor %}
+        {% if function.throws %}
     calloc.free(cErrPtr);
-    {% endif %}
+        {% endif %}
 
     /* return final value */
-
-
+    return  _transformFromFFI(c{{function.c_function_name}}OutputPtr);
     {% else %}
-    lol?
+    \'lol?\';
+    {% endif %}
     {% endif %}
 }
 {% endfor %}
@@ -1416,24 +2091,109 @@ const TEMPLATE_POINTER_FOR_TYPE: &str = "
 
 /// Interface to get a Pointer to the backing data on classes that 
 /// cross FFI boundaries
-abstract class IWithPtr {
+abstract class _IWithPtr {
     ffi.Pointer<ffi.Void> getPointer();
 }
 
 /// Holds the symbol lookup function.
 final ffi.Pointer<T> Function<T extends ffi.NativeType>(String symbolName) _lookup = loadLibrary(getLibraryPath()).lookup;
 
-Pointer<Void> _getPointerForType<T>() {
+
+dynamic _transformToFFI<T>(T upperData) {
+    if (T == String) {
+        return _stringToFFIPointer(upperData as String);
+      } else if (T == int || T == double) {
+        return upperData;
+      } else if (T == bool) {
+        return upperData as bool;
+      } else if (T == Uri) {
+        final s = (upperData as Uri).toString();
+        return _stringToFFIPointer(s);
+      } else if (T == Duration) {
+        return (upperData as Duration).inMilliseconds;
+      } else if (T == DateTime) {
+        return (upperData as DateTime).millisecondsSinceEpoch;
+      } else if (T == List<String>) {
+        // TODO(nf, 04/20/23): This join is only valid for OAuth Space-Separated lists.
+        // It is not general.
+        final s = (upperData as List<String>).join(' ');
+        return _stringToFFIPointer(s);
+      } else if (T == Map<String, String>) {
+        // TODO(nf, 04/20/23): This is only valid for String:String pairs
+        // It is not
+        return _hashMapToFFIPointer(upperData as Map<String, String>);
+      } else if (T == _IWithPtr) {
+        return _getPointerForData(upperData);
+      } else if (T == ffi.Pointer) {
+        return upperData as ffi.Pointer;
+      } else if (upperData is _IAsFFIInt) {
+        return (upperData as _IAsFFIInt);
+      } else {
+        throw {{meta.library_name}}Exception('Invalid ffi data, cannot transform into FFI for for $T', -5);
+      }
+  }
+
+dynamic _transformFromFFI(dynamic data, {bool isList = false, bool isHashMap = false, bool isUri = false, bool isDuration = false, bool isDateTime = false}) {
+    if (data is int || data is double) {
+      if(isDuration) {
+        return Duration(milliseconds: data);
+      } else if (isDateTime) {
+        return DateTime.fromMillisecondsSinceEpoch(data);
+      } else {
+        return data;
+      }
+    } else if (data is bool) {
+      return data;
+    } else if (data is String) {
+      return data;
+    } else if (data is ffi.Pointer) {
+      if (data.address == ffi.nullptr.address) {
+        return null;
+      } else if (isList) {
+        throw Exception('Lists not yet implemented');
+      } else if (data is ffi.Pointer<ffi.Pointer<ffi.Char>> || data is ffi.Pointer<ffi.Char>) {
+        late final String s;
+        if (data is ffi.Pointer<ffi.Pointer<ffi.Char>>) {
+          s =  _getDartStringFromDoublePtr(data);
+        } else {
+          s = _getDartStringFromPtr(data as ffi.Pointer<ffi.Char>);
+        }
+        if(isUri) {
+          return Uri.parse(s);
+        } else {
+          return s;
+        }
+      } else if (data is ffi.Pointer<ffi.Pointer<ffi.NativeType>>) {
+        return transformFromPointer(data);
+      }
+    }
+    throw {{meta.library_name}}Exception('Invalid data in transformFromFFI: $data', -4);
+  }
+
+T transformFromPointer<T, E extends ffi.NativeType>(ffi.Pointer<ffi.Pointer<E>> data) {
+    if (T == String) {
+      return _getDartStringFromDoublePtr(data.cast()) as T;
+    } 
+
+    {% for class in dart_classes %}
+    else if(T == {{ class.backing_ffi_struct.dart_label }}) {
+        return {{ class.identifier.dart_label }}._fromCPointerPointer(data.cast()) as T;
+    }
+    {% endfor %}
+    throw {{meta.library_name}}Exception('Invalid data in transformFromPointer: $T', -4);
+  }
+
+ffi.Pointer<ffi.Void> _getPointerForType<T>() {
     if (T == String) {
       return _getEmptyStringPointer().cast();
     } 
     {% for class in dart_classes %}
-    else if(T == {{ class.identifier.dart_label }}) {
-        return calloc<Pointer<{{ class.ffi_kind }}>().cast();
+    else if(T == {{ class.identifier.dart_label }} || T == {{ class.backing_ffi_struct.dart_label }}) {
+        return calloc<ffi.Pointer<{{ class.backing_ffi_struct.dart_label }}>>().cast();
     }
     {% endfor %}
     else {
-      throw Exception('Invalid type: $T');
+      throw {{meta.library_name}}Exception('Invalid type: $T', -3);
     }
   }
 
@@ -1443,10 +2203,10 @@ Pointer<Void> _getPointerForType<T>() {
 ffi.Pointer<ffi.Void> _getPointerForData(dynamic data) {
     if (data is String) {
       return _stringToFFIPointer(data).cast();
-    } else if (data is IWithPtr) {
+    } else if (data is _IWithPtr) {
       return data.getPointer().cast();
     } else {
-      throw Exception('Invalid data type for pointer: $data');
+      throw {{meta.library_name}}Exception('Invalid data type for pointer: $data', -2);
     }
   }
 

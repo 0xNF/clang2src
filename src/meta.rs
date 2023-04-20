@@ -8,6 +8,7 @@ pub const META_PARAM_TOKEN: &str = "#meta_param:";
 
 #[derive(Debug, Serialize, Clone)]
 pub struct MetaValue {
+    /// Whether this struct must maintain a reference to a backing pointer to Rust-land
     pub is_persistent: bool,
 
     /// Whether this is a method that belongs on struct, the struct itself being denoted by the text leading up the first underscore in the function name
