@@ -8,6 +8,9 @@ pub const META_PARAM_TOKEN: &str = "#meta_param:";
 
 #[derive(Debug, Serialize, Clone)]
 pub struct MetaValue {
+    /// Whether this function should be considered async, and thus should final generated functions
+    /// be wrapped in some kind of async handler
+    pub is_async: bool,
     /// Whether this struct must maintain a reference to a backing pointer to Rust-land
     pub is_persistent: bool,
 
@@ -31,7 +34,11 @@ pub struct MetaValue {
     /// See also: `length_for` and `capacity_for`
     pub is_list: bool,
 
+    /// Whether this value is the pointer to the object that the method this parameter is for should attach to
     pub is_this: bool,
+
+    /// Whether ths function doesnt return anything at all (not including error codes)
+    pub is_void: bool,
 
     /// Whether this function should return an error value if the method call fails  
     /// If true, then the message will be found in a corresponding `#meta_param` field marked with `error`  
@@ -61,6 +68,7 @@ pub struct MetaValue {
     /// Whether this value should be represented by the language's native Duration/TimeSpan type (or otherwise a long)
     /// #meta_param: value_name;duration;
     pub is_duration: bool,
+
     /// Whether this value should be represented by the language's native DateTime type (or otherwise a long)
     /// #meta_param: value_name;datetime;
     pub is_datetime: bool,
@@ -104,11 +112,15 @@ impl MetaValue {
             && !self.is_url
             && !self.is_timestamp
             && !self.as_ptr
+            && !self.is_void
+            && !self.is_async
             && matches!(self.length_for, None)
             && matches!(self.capacity_for, None);
     }
     pub fn new() -> Self {
         MetaValue {
+            is_async: false,
+            is_void: false,
             is_persistent: false,
             for_struct: false,
             is_list: false,
@@ -166,6 +178,8 @@ impl MetaValue {
     /// Takes a meta value, and a meta_keyword and assigns the appropriate meta tag based on the keyword
     fn modify_from_keyword(&mut self, m: &str) {
         match m {
+            "async" => self.is_async = true,
+            "void" => self.is_void = true,
             "persistent" => self.is_persistent = true,
             "this" => self.is_this = true,
             "for_struct" => self.for_struct = true,
@@ -173,7 +187,7 @@ impl MetaValue {
             "nullable" => self.is_nullable = true,
             "static" => self.is_static = true,
             "throws" => self.throws = true,
-            "free" => self.is_destructor = true,
+            "destructor" => self.is_destructor = true,
             "constructor" => self.is_constructor = true,
             "string" => self.is_string = true,
             "hashmap" => self.is_hashmap = true,
