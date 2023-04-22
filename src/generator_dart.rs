@@ -585,6 +585,9 @@ struct DartField {
 
     meta: Option<MetaValue>,
 
+    reads_capacity_from: Option<String>,
+    reads_length_from: Option<String>,
+
     /// Optionally in-line defined text for an immediate assignment
     assign_statement: Option<String>,
 
@@ -605,6 +608,8 @@ impl DartField {
             kind: self.kind.to_upper_type(self.meta.as_ref()),
             meta: self.meta.to_owned(),
             assign_statement: None,
+            reads_length_from: None,
+            reads_capacity_from: None,
             as_primitive_kind: self.as_primitive_kind.to_owned(),
         }
     }
@@ -826,6 +831,30 @@ impl From<&DartFFIStruct> for DartClass {
                 .collect::<Vec<DartField>>(),
         );
 
+        /* parse out aspects that rely on other fields, such as CapacityFor and LengthFor */
+
+        for field in fields.clone().iter() {
+            if let Some(field_meta) = &field.meta {
+                if let Some(length_for_label) = &field_meta.length_for {
+                    if let Some(length_item) = fields.iter_mut().find(|field| {
+                        field.identifier.dart_label
+                            == DartIdentifier::new_from_raw(&length_for_label).dart_label
+                    }) {
+                        length_item.reads_length_from =
+                            Some(field.identifier.dart_label.to_owned());
+                    }
+                } else if let Some(capacity_for_label) = &field_meta.capacity_for {
+                    if let Some(capacity_item) = fields.iter_mut().find(|field| {
+                        field.identifier.dart_label
+                            == DartIdentifier::new_from_raw(&capacity_for_label).dart_label
+                    }) {
+                        capacity_item.reads_capacity_from =
+                            Some(field.identifier.dart_label.to_owned());
+                    }
+                }
+            }
+        }
+
         if f.is_opaque {
             /* _fromCPtr */
             constructors.push(DartConstructor {
@@ -852,69 +881,129 @@ impl From<&DartFFIStruct> for DartClass {
             });
         }
 
-        let mut functions: Vec<DartFunction> = vec![/* fromCPointerPointer */ DartFunction {
-            is_private: false,
-            modifiers: vec![DART_FACTORY_KEYWORD.to_owned()],
-            annotations: vec![],
-            c_function_name: None,
-            dart_comment: Some(DartComment::from_raw(&format!(
-                "/// Creates an instance of this class from a Pointer<Pointer<{}>>",
-                f.label
-            ))),
-            identifier: DartIdentifier::new_from_raw("_fromCPointerPointer"),
-            ffi_return_type: None,
-            is_async: false,
-            is_return_struct: false,
-            is_void: false,
-            output_requires_pointer: false,
-            requires_ffi_function_pointers: false,
-            throws: false,
-            on_class: Some(class_identifier.to_owned()),
-            is_factory: true,
-            return_type: DartDataType::NativeType(DartNativeDataType::Void),
-            meta: None,
-            parameters: {
-                let ffi_kind = DartFFIDataType::Pointer {
-                    sub_type: Box::new(DartFFIDataType::Pointer {
+        let mut functions: Vec<DartFunction> = vec![
+            /* fromCPointer */
+            DartFunction {
+                is_private: false,
+                modifiers: vec![DART_FACTORY_KEYWORD.to_owned()],
+                annotations: vec![],
+                c_function_name: None,
+                dart_comment: Some(DartComment::from_raw(&format!(
+                    "/// Creates an instance of this class from a Pointer<{}>",
+                    f.label
+                ))),
+                identifier: DartIdentifier::new_from_raw("_fromCPointer"),
+                ffi_return_type: None,
+                is_async: false,
+                is_return_struct: false,
+                is_void: false,
+                output_requires_pointer: false,
+                requires_ffi_function_pointers: false,
+                throws: false,
+                on_class: Some(class_identifier.to_owned()),
+                is_factory: true,
+                return_type: DartDataType::NativeType(DartNativeDataType::Void),
+                meta: None,
+                parameters: {
+                    let ffi_kind = DartFFIDataType::Pointer {
                         sub_type: Box::new(DartFFIDataType::Void),
-                    }),
-                };
-                let dkind = DartDataType::FFIType(ffi_kind.to_owned());
-                vec![DartParameter {
-                    is_nullable: false,
-                    is_required: false,
-                    is_persistent: false,
-                    default_value: None,
-                    requires_pointer: false,
-                    identifier: DartIdentifier::new_from_raw("voidPtr"),
-                    as_ffi_value: None,
-                    as_primitive_kind: dkind.to_primitive(),
-                    kind: dkind.clone(),
-                    ffi_kind,
-                }]
+                    };
+                    let dkind = DartDataType::FFIType(ffi_kind.to_owned());
+                    vec![DartParameter {
+                        is_nullable: false,
+                        is_required: false,
+                        is_persistent: false,
+                        default_value: None,
+                        requires_pointer: false,
+                        identifier: DartIdentifier::new_from_raw("voidPtr"),
+                        as_ffi_value: None,
+                        as_primitive_kind: dkind.to_primitive(),
+                        kind: dkind.clone(),
+                        ffi_kind,
+                    }]
+                },
+                body: Some(
+                    if f.is_opaque {
+                        format!(
+                            "
+                    return {}._fromCPtr(voidPtr.cast());
+                        ",
+                            class_identifier.dart_label
+                        )
+                    } else {
+                        format!(
+                            "
+                    ffi.Pointer<{}> ptr = voidPtr.cast();
+                    final st = ptr.ref;
+                    return {}._fromCStruct(st);",
+                            backing_struct_identifier.dart_label, class_identifier.dart_label,
+                        )
+                    }
+                    .to_owned(),
+                ),
             },
-            body: Some(
-                if f.is_opaque {
-                    format!(
-                        "
-                ffi.Pointer<ffi.Pointer<{}>> ptr = voidPtr.cast();
-                final _innerPtr = ptr.value;
-                return {}._fromCPtr(_innerPtr);
+            /* fromCPointerPointer */
+            DartFunction {
+                is_private: false,
+                modifiers: vec![DART_FACTORY_KEYWORD.to_owned()],
+                annotations: vec![],
+                c_function_name: None,
+                dart_comment: Some(DartComment::from_raw(&format!(
+                    "/// Creates an instance of this class from a Pointer<Pointer<{}>>",
+                    f.label
+                ))),
+                identifier: DartIdentifier::new_from_raw("_fromCPointerPointer"),
+                ffi_return_type: None,
+                is_async: false,
+                is_return_struct: false,
+                is_void: false,
+                output_requires_pointer: false,
+                requires_ffi_function_pointers: false,
+                throws: false,
+                on_class: Some(class_identifier.to_owned()),
+                is_factory: true,
+                return_type: DartDataType::NativeType(DartNativeDataType::Void),
+                meta: None,
+                parameters: {
+                    let ffi_kind = DartFFIDataType::Pointer {
+                        sub_type: Box::new(DartFFIDataType::Pointer {
+                            sub_type: Box::new(DartFFIDataType::Void),
+                        }),
+                    };
+                    let dkind = DartDataType::FFIType(ffi_kind.to_owned());
+                    vec![DartParameter {
+                        is_nullable: false,
+                        is_required: false,
+                        is_persistent: false,
+                        default_value: None,
+                        requires_pointer: false,
+                        identifier: DartIdentifier::new_from_raw("voidPtr"),
+                        as_ffi_value: None,
+                        as_primitive_kind: dkind.to_primitive(),
+                        kind: dkind.clone(),
+                        ffi_kind,
+                    }]
+                },
+                body: Some(
+                    if f.is_opaque {
+                        format!(
+                            "
+                return {}._fromCPointer(voidPtr.value);
                     ",
-                        backing_struct_identifier.dart_label, class_identifier.dart_label
-                    )
-                } else {
-                    format!(
-                        "
-                ffi.Pointer<ffi.Pointer<{}>> ptr = voidPtr.cast();
-                final st = ptr.value.ref;
-                return {}._fromCStruct(st);",
-                        backing_struct_identifier.dart_label, class_identifier.dart_label,
-                    )
-                }
-                .to_owned(),
-            ),
-        }];
+                            class_identifier.dart_label
+                        )
+                    } else {
+                        format!(
+                            "
+                return {}._fromCPointer(voidPtr.value);
+                ",
+                            class_identifier.dart_label,
+                        )
+                    }
+                    .to_owned(),
+                ),
+            },
+        ];
 
         /* fromCStruct */
         if !f.is_opaque {
@@ -980,6 +1069,8 @@ impl From<&DartFFIStruct> for DartClass {
                         meta: None,
                         kind: dkind,
                         assign_statement: None,
+                        reads_capacity_from: None,
+                        reads_length_from: None,
                     };
 
                     fields.push(_self_ptr);
@@ -1017,6 +1108,8 @@ impl From<&DartFFIStruct> for DartClass {
                 fields.push(DartField {
                     is_nullable: false,
                     is_private: true,
+                    reads_capacity_from: None,
+                    reads_length_from: None,
                     identifier: DartIdentifier::new_from_raw("finalizer"),
                     comment: Some(DartComment::from_raw("/// Pointer to the backing `free` function which disposes the backing pointer when this dart object is GC'd")),
                     annotations: vec![],
@@ -1273,6 +1366,8 @@ impl From<&CStruct> for DartFFIStruct {
                     modifiers: vec!["external".to_owned()],
                     as_primitive_kind: kind.for_struct(),
                     assign_statement: None,
+                    reads_capacity_from: None,
+                    reads_length_from: None,
                     meta: decl.meta.to_owned(),
                     kind,
                 }
@@ -2111,7 +2206,7 @@ class {% if class.is_private %}_{% endif %}{{ class.identifier.dart_label}} {% i
         {{ function.body }}
             {% elif function.identifier.dart_label is containing(\"fromCStruct\") %}
                 {% for field in class.fields %}
-        final {{ field.kind }}{% if field.is_nullable %}?{% endif %} _c{{field.identifier.dart_label}} = _transformFromFFI<{{ field.kind }}>(c.{{field.identifier.dart_label}}, {% if field.meta is some %} {% if field.meta.is_list %}isList: true, {% elif field.meta.is_url %}isUri: true,{% elif field.meta.is_duration%}isDuration: true, {% elif field.meta.is_datetime%}isDateTime: true,  {% endif %}{% endif %}){% if not field.is_nullable %}!{% endif %};
+        final {{ field.kind }}{% if field.is_nullable %}?{% endif %} _c{{field.identifier.dart_label}} = _transformFromFFI<{{ field.kind }}>(c.{{field.identifier.dart_label}}, {% if field.meta is some %} {% if field.meta.is_list %}isList: true, {% elif field.meta.is_url %}isUri: true,{% elif field.meta.is_duration%}isDuration: true, {% elif field.meta.is_datetime%}isDateTime: true,  {% endif %}{% endif %} {% if field.reads_length_from is some %} listSize: c.{{ field.reads_length_from }}, {% endif %}){% if not field.is_nullable %}!{% endif %};
                 {% endfor %}
             final _{{class.identifier.dart_label}}Ret = {{ class.identifier.dart_label }}._fromFields({% for field in class.fields %}_c{{ field.identifier.dart_label }}, {% endfor %});
             return _{{class.identifier.dart_label}}Ret;
@@ -2376,7 +2471,7 @@ dynamic _transformToFFI<T>(T upperData) {
   }
 
 
-  T? _transformFromFFI<T>(dynamic data, {bool isDoublePointer = false, bool isList = false, bool isHashMap = false, bool isUri = false, bool isDuration = false, bool isDateTime = false}) {
+  T? _transformFromFFI<T>(dynamic data, {bool isDoublePointer = false, bool isList = false, bool isHashMap = false, bool isUri = false, bool isDuration = false, bool isDateTime = false, int listSize = 0}) {
     if ((T == double && (data is double || data is int)) || (T == int && data is int)) {
         if (isDuration) {
         return Duration(milliseconds: data.toInt()) as T;
@@ -2393,8 +2488,16 @@ dynamic _transformToFFI<T>(T upperData) {
       if (data.address == ffi.nullptr.address) {
         return null;
       } else if (isList) {
-        throw Exception('Lists not yet implemented');
-      } else if (T == Uri || T == String) {
+        // TODO(nf, 04/22/23): we assume lists are List<String> and are single pointer lists
+        ffi.Pointer<ffi.Pointer<ffi.Char>> ptr = data.cast();
+        List<String> lst = [];
+        for (int i = 0; i < listSize; i++) {
+          final charPtr = ptr.elementAt(i).value;
+          final s = _getDartStringFromPtr(charPtr);
+          lst.add(s);
+        }
+        return lst as T;
+    } else if (T == Uri || T == String) {
         late final String s;
         if (isDoublePointer) {
           s = _getDartStringFromDoublePtr(data.cast());
@@ -2412,20 +2515,27 @@ dynamic _transformToFFI<T>(T upperData) {
           return s as T;
         }
       } else if (data is ffi.Pointer<ffi.Pointer<ffi.NativeType>>) {
-        return transformFromPointer<T, ffi.NativeType>(data);
+        return transformFromPointer<T, ffi.NativeType>(data, isDoublePointer);
       }
     }
     throw {{meta.library_name}}Exception('Invalid data in transformFromFFI: $data', -4);
   }
 
-T transformFromPointer<T, E extends ffi.NativeType>(ffi.Pointer<ffi.Pointer<E>> data) {
+T transformFromPointer<T, E extends ffi.NativeType>(ffi.Pointer<E> data, bool isDoublePointer) {
     if (T == String) {
-      return _getDartStringFromDoublePtr(data.cast()) as T;
+        if(isDoublePointer) {
+            return _getDartStringFromDoublePtr(data.cast()) as T;
+        } else {
+            return _getDartStringFromPtr(data.cast()) as T;
+        }
     }
-
     {% for class in dart_classes %}
     else if(T == {{ class.backing_ffi_struct.dart_label }} || T == {{ class.identifier.dart_label }}) {
-        return {{ class.identifier.dart_label }}._fromCPointerPointer(data.cast()) as T;
+        if(isDoublePointer) {
+            return {{ class.identifier.dart_label }}._fromCPointerPointer(data.cast()) as T;
+        } else {
+            return {{ class.identifier.dart_label }}._fromCPointer(data.cast()) as T;
+        }
     }
     {% endfor %}
     throw {{meta.library_name}}Exception('Invalid data in transformFromPointer: $T', -4);
