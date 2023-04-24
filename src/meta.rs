@@ -96,6 +96,7 @@ impl MetaValue {
     /// `true` if the meta object is totally unset for all properties
     pub fn is_empty(&self) -> bool {
         return !self.for_struct
+            && !self.is_persistent
             && !self.is_static
             && !self.is_nullable
             && !self.is_list

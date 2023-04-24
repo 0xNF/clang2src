@@ -2608,6 +2608,19 @@ ffi.Pointer<ffi.Char> _hashMapToFFIPointer(Map<String, String> dict) {
 ffi.Pointer<ffi.Pointer<ffi.Char>> _getEmptyStringPointer() {
   return calloc<ffi.Pointer<ffi.Char>>();
 }
+
+ffi.Pointer<ffi.Pointer<Utf8>> strListToPointer(List<String> strings) {
+    List<ffi.Pointer<Utf8>> utf8PointerList = strings.map((str) => str.toNativeUtf8()).toList();
+  
+    final ffi.Pointer<ffi.Pointer<Utf8>> pointerPointer = calloc.allocate(ffi.sizeOf<ffi.Pointer<Utf8>>() * utf8PointerList.length);
+  
+    strings.asMap().forEach((index, utf) {
+      pointerPointer[index] = utf8PointerList[index];
+    });
+  
+    return pointerPointer;
+  }
+  
 ";
 
 const TEMPLATE_UTILITY_FUNCTIONS: &str = "
