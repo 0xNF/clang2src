@@ -169,7 +169,11 @@ impl MetaValue {
                     }
                 }
             }
-            Some(meta)
+            if meta.is_empty() {
+                None
+            } else {
+                Some(meta)
+            }
         } else {
             None
         }
@@ -257,6 +261,10 @@ impl MetaValue {
                 }
             }
         }
-        Some(meta)
+        if meta.is_empty() {
+            None
+        } else {
+            Some(meta)
+        }
     }
 }

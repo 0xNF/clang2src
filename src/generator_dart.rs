@@ -1080,7 +1080,7 @@ impl From<&DartFFIStruct> for DartClass {
                 implements.push("_IWithPtr".to_owned());
 
                 functions.push(DartFunction {
-                    is_private: false,
+                    is_private: true,
                     on_class: Some(class_identifier.to_owned()),
                     identifier: DartIdentifier::new_from_raw("getPointer"),
                     c_function_name: None,
@@ -2429,7 +2429,7 @@ const TEMPLATE_POINTER_FOR_TYPE: &str = "
 /// Interface to get a Pointer to the backing data on classes that
 /// cross FFI boundaries
 abstract class _IWithPtr {
-    ffi.Pointer<ffi.Void> getPointer();
+    ffi.Pointer<ffi.Void> _getPointer();
 }
 
 /// Holds the symbol lookup function.
@@ -2562,7 +2562,7 @@ ffi.Pointer<ffi.Void> _getPointerForData(dynamic data) {
     if (data is String) {
       return _stringToFFIPointer(data).cast();
     } else if (data is _IWithPtr) {
-      return data.getPointer().cast();
+      return data._getPointer().cast();
     } else {
       throw {{meta.library_name}}Exception('Invalid data type for pointer: $data', -2);
     }
