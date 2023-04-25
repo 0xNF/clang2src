@@ -89,6 +89,12 @@ struct Data<'a> {
     library_name: &'a str,
     usings: Vec<&'a str>,
     enums: Vec<DartEnum>,
+    /// If true, persistent referential classes using _selfPtr will implement 'NativeFinalizer'
+    /// This means they cannot be passed into Dart Isolates due to the semantics of cloning memory and the problem
+    /// of what to do with possibly double-free'ing.
+    ///
+    /// Set to false to implement `.Dispose()` methods instead, leaving it up to the user to do it properly, instead of the system
+    use_finalize: bool,
     ffi_structs: Vec<DartFFIStruct>,
     ffi_functions: Vec<DartFunction>,
     constants: Vec<DartVariable>,
@@ -102,6 +108,7 @@ impl<'a> Data<'a> {
         header: &HeaderFile,
         library_path: &'a str,
         library_name: &'a str,
+        use_finalize: bool,
         usings: Vec<&'a str>,
     ) -> Self {
         let enums: Vec<DartEnum> = header.enums.iter().map(DartEnum::from).collect();
@@ -194,6 +201,63 @@ impl<'a> Data<'a> {
             } else {
                 /* Add for_struct function outside of Constructor */
                 let fmeta = f.meta.to_owned().unwrap();
+                if !use_finalize && fmeta.is_destructor {
+                    let mut is_return_struct: bool = false;
+                    // FYI(nf, 04/25/23): routine for generating Free/Dispose methods
+                    let df = DartFunction {
+                        is_private: false,
+                        is_async: fmeta.is_async,
+                        is_factory: false,
+                        output_requires_pointer: false,
+                        requires_ffi_function_pointers: false,
+                        throws: fmeta.throws,
+                        is_void: fmeta.is_void,
+                        c_function_name: Some(f.label.to_owned()),
+                        dart_comment: f.comment.to_owned().map(DartComment::from),
+                        on_class: Some(on_class.identifier.to_owned()),
+                        identifier: DartIdentifier::new_from_raw("dispose"),
+                        return_type: if fmeta.is_void {
+                            DartDataType::NativeType(DartNativeDataType::Void)
+                        } else {
+                            /* Extract the designated `Output` field if it exists */
+                            if let Some(param) = f.parameters.iter().find(|p| match &p.meta {
+                                Some(param_meta) => param_meta.is_output,
+                                None => false,
+                            }) {
+                                is_return_struct = param.variable_type.is_struct;
+                                DartDataType::from_meta(
+                                    &param.label,
+                                    &param.variable_type,
+                                    &param.meta,
+                                    false,
+                                )
+                            } else {
+                                /* If no `output` field exists, and the return value isn't `void`, then just return whatever the face-value return is, transformed for Dart */
+                                DartDataType::from(&*f.return_type)
+                            }
+                        },
+                        is_return_struct,
+                        modifiers: vec![],
+                        annotations: vec![],
+                        parameters: f
+                            .parameters
+                            .iter()
+                            .filter(|p| match &p.meta {
+                                Some(param_meta) => {
+                                    !(param_meta.is_error
+                                        || param_meta.is_output
+                                        || param_meta.is_this)
+                                }
+                                None => true,
+                            })
+                            .map(|p| DartParameter::from(p, false))
+                            .collect(),
+                        meta: f.meta.to_owned(),
+                        ffi_return_type: Some(DartFFIDataType::from(&*f.return_type)),
+                        body: None,
+                    };
+                    on_class.functions.push(df);
+                }
                 if !fmeta.is_destructor {
                     // FYI(nf, 04/21/23): dont worry about destructors. They are handled with _finalizer attachements
                     let mut is_return_struct: bool = false;
@@ -257,6 +321,7 @@ impl<'a> Data<'a> {
         Data {
             library_path,
             library_name,
+            use_finalize,
             usings,
             enums,
             ffi_structs,
@@ -861,12 +926,17 @@ impl From<&DartFFIStruct> for DartClass {
                 is_private: true,
                 parameters: vec!["_selfPtr".to_owned()],
                 identifier: DartIdentifier::new_from_raw("fromCPtr"),
-                body: Some(
-                    "
+                body: if false {
+                    // TODO(nf, 04/25/23): use Data.use_finalizer for this
+                    Some(
+                        "
                 _finalizer.attach(this, _selfPtr.cast(), detach: this);
                 "
-                    .to_owned(),
-                ),
+                        .to_owned(),
+                    )
+                } else {
+                    None
+                },
             });
         } else {
             /* _fromFields */
@@ -1103,9 +1173,11 @@ impl From<&DartFFIStruct> for DartClass {
                     body: Some("return _selfPtr.cast();".to_owned()),
                 });
 
-                /* make Finalizable for free'ing  */
-                implements.push("ffi.Finalizable".to_owned());
-                fields.push(DartField {
+                // TODO(nf, 04/25/23): use data.use_finalize here
+                if (false) {
+                    /* make Finalizable for free'ing  */
+                    implements.push("ffi.Finalizable".to_owned());
+                    fields.push(DartField {
                     is_nullable: false,
                     is_private: true,
                     reads_capacity_from: None,
@@ -1123,6 +1195,7 @@ impl From<&DartFFIStruct> for DartClass {
                         meta_value
                     }),
                 })
+                }
             }
         }
 
@@ -2017,6 +2090,7 @@ pub fn generate(header: HeaderFile, library_path: &str, library_name: &str) -> S
         &header,
         library_path,
         library_name,
+        false,
         vec![
             "'package:ffi/ffi.dart'",
             "'dart:ffi' as ffi",
@@ -2200,8 +2274,10 @@ class {% if class.is_private %}_{% endif %}{{ class.identifier.dart_label}} {% i
     {% for function in class.functions %}
         {% if function.dart_comment is some %}{{ function.dart_comment }}{% endif %}
         {% for annotation in function.annotations %}{{ annotation }}{% endfor %}
-        {% for modifier in function.modifiers %}{{ modifier }} {% endfor %} {% if function.is_async %} {# Future< #}{% endif %}{% if function.is_factory %} {% elif function.is_void %} void {% else %} {{ function.return_type }} {% endif %}{% if function.is_async %}{# > #}{% endif %} {% if function.is_factory %}{{ class.identifier.dart_label }}.{% endif %}{% if function.is_private %}_{% endif %}{{ function.identifier.dart_label}}({% for parameter in function.parameters %} {% if parameter.is_required %}required {% endif %}{{ parameter.kind }} {{ parameter.identifier.dart_label}}, {% endfor %}) {% if function.is_async %} {# async #} {% endif %} {
-            {% if function.is_async %} {# return await Isolate.run(() { #} {% endif %}
+        {% for modifier in function.modifiers %}{{ modifier }} {% endfor %} {% if function.is_async %} Future< {% endif %}{% if function.is_factory %} {% elif function.is_void %} void {% else %} {{ function.return_type }} {% endif %}{% if function.is_async %}>{% endif %} {% if function.is_factory %}{{ class.identifier.dart_label }}.{% endif %}{% if function.is_private %}_{% endif %}{{ function.identifier.dart_label}}({% for parameter in function.parameters %} {% if parameter.is_required %}required {% endif %}{{ parameter.kind }} {{ parameter.identifier.dart_label}}, {% endfor %}) {% if function.is_async %} async {% endif %} {
+            {% if function.is_async %} 
+            final _selfPtrAddress = this._selfPtr.address;
+            return await Isolate.run(() { {% endif %}
             {% if function.body is some %}
         {{ function.body }}
             {% elif function.identifier.dart_label is containing(\"fromCStruct\") %}
@@ -2219,6 +2295,7 @@ class {% if class.is_private %}_{% endif %}{{ class.identifier.dart_label}} {% i
                 final dynamic c{{ parameter.identifier.dart_label }}ForFFI = _transformToFFI({{ parameter.identifier.dart_label }});
                 {% endfor %}
                 /* call native function */
+                {% if function.throws %}
                 int errCode = ffi_{{ function.c_function_name }}(
                         c{{function.c_function_name}}OutputPtr.cast(),
                         {% for parameter in function.parameters %}
@@ -2242,6 +2319,14 @@ class {% if class.is_private %}_{% endif %}{{ class.identifier.dart_label}} {% i
                     /* throw final Exception */
                     throw {{meta.library_name}}Exception(_getDartStringFromDoublePtr(cErrPtr), errCode);
                 }
+                {% else %}
+                ffi_{{ function.c_function_name }}(
+                    c{{function.c_function_name}}OutputPtr.cast(),
+                    {% for parameter in function.parameters %}
+                    c{{ parameter.identifier.dart_label }}ForFFI,
+                    {% endfor %}
+                );
+                {% endif %}
 
                 /* Free allocated pointers */
                     {% for parameter in function.parameters %}
@@ -2270,8 +2355,18 @@ class {% if class.is_private %}_{% endif %}{{ class.identifier.dart_label}} {% i
             final c{{ parameter.identifier.dart_label }}ForFFI = _transformToFFI({{ parameter.identifier.dart_label }});
                 {% endfor %}
                 /* call native function */
+                {% if function.throws %}
+
+                if ({% if function.is_async %}_selfPtrAddress {% else %}this._selfPtr.address{% endif %} == ffi.nullptr.address) {
+                    {% if function.meta is some and function.meta.is_destructor %}
+                    return;
+                    {% else %}
+                    throw {{meta.library_name}}Exception('Cannot call function. This object has been reclaimed by the system', -10);
+                    {% endif %}
+                }
+
                 int errCode = ffi_{{ function.c_function_name }}(
-                        this._selfPtr,
+                        {% if function.is_async %}ffi.Pointer<ffi.Void>.fromAddress(_selfPtrAddress).cast(){% else %}this._selfPtr{% endif %},
                         {% if function.output_requires_pointer %}_c{{ function.c_function_name }}OutputPtr.cast(),{% endif %}
                         {% for parameter in function.parameters %}
                         c{{ parameter.identifier.dart_label }}ForFFI,
@@ -2294,6 +2389,23 @@ class {% if class.is_private %}_{% endif %}{{ class.identifier.dart_label}} {% i
                     /* throw final Exception */
                     throw {{meta.library_name}}Exception(_getDartStringFromDoublePtr(cErrPtr), errCode);
                 }
+                {% else %}
+                    
+                if({% if function.is_async %}_selfPtrAddress {% else %}this._selfPtr.address{% endif %} == ffi.nullptr.address) {
+                    {% if function.meta is some and function.meta.is_destructor %}
+                    return;
+                    {% else %}
+                    throw {{meta.library_name}}Exception('Cannot call function. This object has been reclaimed by the system', -10);
+                    {% endif %}
+                }
+                {% if not function.is_void %} {{ function.return_type }} _ret = {% endif %}ffi_{{ function.c_function_name }}(
+                    {% if function.is_async %}ffi.Pointer<ffi.Void>.fromAddress(_selfPtrAddress).cast(){% else %}this._selfPtr{% endif %},
+                    {% if function.output_requires_pointer %}_c{{ function.c_function_name }}OutputPtr.cast(),{% endif %}
+                    {% for parameter in function.parameters %}
+                    c{{ parameter.identifier.dart_label }}ForFFI,
+                    {% endfor %}
+                );
+                {% endif %}
 
                 /* Free allocated pointers */
                     {% for parameter in function.parameters %}
@@ -2304,22 +2416,20 @@ class {% if class.is_private %}_{% endif %}{{ class.identifier.dart_label}} {% i
                     {% if function.throws %}
                 calloc.free(cErrPtr);
                     {% endif %}
-        'TODO: ayy lmao put that body here boi';
             {% if not function.is_void %}
         /* return final value */
                 {% if function.output_requires_pointer %}
-                    // requires a pointer bitches
                     {% if function.return_type_struct %}
         return {{ function.return_type }}._fromCPointerPointer(_c{{function.c_function_name}}OutputPtr.cast());
                     {% else %}
-        return _transformFromFFI(_c{{function.c_function_name}}OutputPtr, isDoublePointer: true)!;
+        return _transformFromFFI<{{ function.return_type }}>(_c{{function.c_function_name}}OutputPtr, isDoublePointer: true)!;
                     {% endif %}
                 {% else %}
                 return ??? // todo: what do when function is not void, and doesnt return a struct;
                 {% endif %}
             {% endif %}
         {% endif %}
-        {% if function.is_async %} {# }); #} {% endif %}
+        {% if function.is_async %} });  {% endif %}
 
     }
     {% endfor %}
@@ -2335,9 +2445,9 @@ const TEMPLATE_DART_NATIVE_FUNCTIONS: &str = "
 /* Region: Dart Free Functions */
 {% for function in dart_native_free_functions %}
 {% for annotation in function.annotations %}{{ annotation }}{% endfor %}
-{% for modifier in function.modifiers %} {{ modifier }} {% endfor %} {% if function.is_async %} {# Future< #}{% endif %}{{ function.return_type }} {% if function.is_async %}{# > #}{% endif %} {% if function.is_private %}_{% endif %}{{ function.identifier.dart_label}}({% for parameter in function.parameters %} {% if parameter.is_required %}required {% endif %}{{ parameter.kind }} {{ parameter.identifier.dart_label }}, {% endfor %}) {% if function.is_async %} {# async #} {% endif %}{
+{% for modifier in function.modifiers %} {{ modifier }} {% endfor %} {% if function.is_async %}  Future< {% endif %}{{ function.return_type }} {% if function.is_async %}>{% endif %} {% if function.is_private %}_{% endif %}{{ function.identifier.dart_label}}({% for parameter in function.parameters %} {% if parameter.is_required %}required {% endif %}{{ parameter.kind }} {{ parameter.identifier.dart_label }}, {% endfor %}) {% if function.is_async %} async {% endif %}{
     {% if function.is_async %}
-    {# return await Isolate.run(() { #} 
+    return await Isolate.run(() {
     {% endif %}
     {% if function.body is some %}
     {{ function.body }}
@@ -2398,14 +2508,12 @@ const TEMPLATE_DART_NATIVE_FUNCTIONS: &str = "
         {% endif %}
 
     {% if not function.is_void %}
-        // not void bitches
     /* return final value */
             {% if function.output_requires_pointer %}
-                // requires a pointer bitches
                 {% if function.return_type_struct %}
     return {{ function.return_type }}._fromCPointerPointer(_c{{function.c_function_name}}OutputPtr.cast());
                 {% else %}
-    return _transformFromFFI(_c{{function.c_function_name}}OutputPtr, isDoublePointer: true)!;
+    return _transformFromFFI<{{ function.return_type }}>(_c{{function.c_function_name}}OutputPtr, isDoublePointer: true)!;
                 {% endif %}
             {% else %}
             return ??? // todo: what do when function is not void, and doesnt return a struct;
@@ -2416,7 +2524,7 @@ const TEMPLATE_DART_NATIVE_FUNCTIONS: &str = "
     {% endif %}
     {% endif %}
     {% if function.is_async %}
-    {# }); #}
+    });
     {% endif %}
 }
 {% endfor %}
