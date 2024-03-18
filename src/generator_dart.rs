@@ -2130,6 +2130,7 @@ pub fn generate(header: HeaderFile, library_path: &str, library_name: &str) -> S
 }
 
 const TEMPLATE_GENERATED_HEADER: &'static str = "
+// @dart = 3.1
 // DO NOT MODIFY THIS FILE
 // This file contains automatically generated Dart Bindings.
 // It was generated via the clang2src project, and ultimately comes from a set of annotated Rust source files
@@ -2175,7 +2176,7 @@ const TEMPLATE_FFI_STRUCTS: &str = "
 /* Region: FFI Structs */
 {% for ffi_struct in ffi_structs %}
 
-class {% if ffi_struct.is_private %}_{% endif %}{{ ffi_struct.label }} {% if ffi_struct.extends | length %} extends {% for extender in ffi_struct.extends %} {{ extender }}{% if not loop.last %}, {% endif %} {% endfor %} {% endif %}  {% if ffi_struct.implements | length %} implements {% for implementer in ffi_struct.implements %} {{ implementer }}{% if not loop.last %}, {% endif %} {% endfor %} {% endif %}{
+final class {% if ffi_struct.is_private %}_{% endif %}{{ ffi_struct.label }} {% if ffi_struct.extends | length %} extends {% for extender in ffi_struct.extends %} {{ extender }}{% if not loop.last %}, {% endif %} {% endfor %} {% endif %}  {% if ffi_struct.implements | length %} implements {% for implementer in ffi_struct.implements %} {{ implementer }}{% if not loop.last %}, {% endif %} {% endfor %} {% endif %}{
     {% for field in ffi_struct.fields %}
     {% if field.comment is some %}{{ field.comment }}{% endif %}
     {% for annotation in field.annotations %}{{ annotation }}
