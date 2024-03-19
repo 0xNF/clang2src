@@ -7,11 +7,16 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+/**
+ * FYI(NF): Somewhere along the way, `c_char` disappeared from std::ffi?
+ */
 #define OAUTHTOOL_PASS 0
 
 #define OAUTHTOOL_FAIL 1
 
 #define OAUTHTOOL_FAIL_NULL_POINTER 2
+
+#define DEFINE_SERVER 1
 
 /**
  * Code Challenge for PKCE-enabled Authorization Code Flow
@@ -174,11 +179,10 @@ typedef struct ParsedAuthorizationCode {
  * #meta: throws;
  * #meta_param: encrypted_output;output;string;
  * #meta_param: plain_text;string;
- * #meta_param: engine;as_ptr;
  * #meta_param: err_ptr;error;
  */
-uint32_t encrypt(const char *plain_text,
-                 char **encrypted_output,
+uint32_t encrypt(char **encrypted_output,
+                 const char *plain_text,
                  struct Engine *engine,
                  char **err_ptr);
 
@@ -188,11 +192,10 @@ uint32_t encrypt(const char *plain_text,
  * #meta: throws;
  * #meta_param: encrypted_text;string;
  * #meta_param: decrypted_output;output;string;
- * #meta_param: engine;as_ptr;
  * #meta_param: err_ptr;error;
  */
-uint32_t decrypt(const char *encrypted_text,
-                 char **decrypted_output,
+uint32_t decrypt(char **decrypted_output,
+                 const char *encrypted_text,
                  struct Engine *engine,
                  char **err_ptr);
 
@@ -222,10 +225,11 @@ uint32_t OAuth2PKCE_new(struct OAuth2PKCE **this_,
                         uint64_t timeout_in_milliseconds,
                         char **err_ptr);
 
+#if defined(DEFINE_SERVER)
 /**
  * Launches a local web server and attempts to perform the token exchange automatically
  * This can only be used on devices that have a web browser
- * #meta: for_struct;throws;
+ * #meta: for_struct;throws;async;
  * #meta_param: this_;this;
  * #meta_param: token_output;output;
  * #meta_param: err_ptr;error;
@@ -233,9 +237,11 @@ uint32_t OAuth2PKCE_new(struct OAuth2PKCE **this_,
 uint32_t OAuth2PKCE_get_token_automatic(struct OAuth2PKCE *this_,
                                         struct TokenResponse **token_output,
                                         char **err_ptr);
+#endif
 
+#if defined(DEFINE_SERVER)
 /**
- * #meta: for_struct;throws;
+ * #meta: for_struct;throws;async;
  * #meta_param: this_;this;
  * #meta_param: redirect_url;url;
  * #meta_param: verifier_state;string;
@@ -244,11 +250,12 @@ uint32_t OAuth2PKCE_get_token_automatic(struct OAuth2PKCE *this_,
  * #meta_param: err_ptr;error;
  */
 uint32_t OAuth2PKCE_start_web_server_for_callback(struct OAuth2PKCE *this_,
+                                                  struct TokenResponse **token_output,
                                                   const char *redirect_url,
                                                   const char *verifier_state,
-                                                  struct TokenResponse **token_output,
                                                   uint64_t timeout_in_milliseconds,
                                                   char **err_ptr);
+#endif
 
 /**
  * Uses the initializes `this` manager to get the Authoirzation URL as known by its parameters
@@ -266,8 +273,8 @@ uint32_t OAuth2PKCE_get_authorization_url(struct OAuth2PKCE *this_,
  *
  * If Verifier State is null, defaults to the using the verifier state known to the OAuth2Pkce manager
  *
- * If Verifier State is null, overwrites the verifier state to that one instead
- * #meta: for_struct;throws;
+ * If Verifier State is not null, overwrites the verifier state to that one instead
+ * #meta: for_struct;throws;async;
  * #meta_param: this_;this;
  * #meta_param: authorization_code;string;
  * #meta_param: verifier_state;string;
@@ -275,22 +282,22 @@ uint32_t OAuth2PKCE_get_authorization_url(struct OAuth2PKCE *this_,
  * #meta_param: err_ptr;error;
  */
 uint32_t OAuth2PKCE_exchange_authorization_code_for_token(struct OAuth2PKCE *this_,
+                                                          struct TokenResponse **token_output,
                                                           const char *authorization_code,
                                                           const char *verifier_state,
-                                                          struct TokenResponse **token_output,
                                                           char **err_ptr);
 
 /**
  * Given a Refresh Token, use it to retrieve a new TokenResponse
- * #meta: for_struct;throws;
+ * #meta: for_struct;throws;async;
  * #meta_param: this_;this;
  * #meta_param: err_ptr;error;
  * #meta_param: token_output;output;
  * #meta_param: refresh_token;string;
  */
 uint32_t OAuth2PKCE_refresh_access_token(struct OAuth2PKCE *this_,
-                                         const char *refresh_token,
                                          struct TokenResponse **token_output,
+                                         const char *refresh_token,
                                          char **err_ptr);
 
 /**
@@ -336,28 +343,28 @@ uint32_t OAuth2Authorization_get_authorization_url(struct OAuth2Authorization *t
  *
  * If Verifier State is null, overwrites the verifier state to that one instead
  *
- * #meta: for_struct;throws;
+ * #meta: for_struct;throws;async;
  * #meta_param: this_;this;
  * #meta_param: authorization_code;string;
  * #meta_param: token_output;output;
  * #meta_param: err_ptr;error;
  */
 uint32_t OAuth2Authorization_exchange_authorization_code_for_token(struct OAuth2Authorization *this_,
-                                                                   const char *authorization_code,
                                                                    struct TokenResponse **token_output,
+                                                                   const char *authorization_code,
                                                                    char **err_ptr);
 
 /**
  * Given a Refresh Token, use it to retrieve a new TokenResponse
- * #meta: for_struct;throws;
+ * #meta: for_struct;throws;async;
  * #meta_param: this_;this;
  * #meta_param: refresh_token;string;
  * #meta_param: token_output;output;
  * #meta_param: err_ptr;error;
  */
 uint32_t OAuth2Authorization_refresh_access_token(struct OAuth2Authorization *this_,
-                                                  const char *refresh_token,
                                                   struct TokenResponse **token_output,
+                                                  const char *refresh_token,
                                                   char **err_ptr);
 
 /**
@@ -368,8 +375,8 @@ uint32_t OAuth2Authorization_refresh_access_token(struct OAuth2Authorization *th
  * #meta_param: parsed_authorization_code_output;output;
  * #meta_param: err_ptr;error;
  */
-uint32_t parse_authorization_callback_url(const char *filled_callback_url,
-                                          struct ParsedAuthorizationCode **parsed_authorization_code_output,
+uint32_t parse_authorization_callback_url(struct ParsedAuthorizationCode **parsed_authorization_code_output,
+                                          const char *filled_callback_url,
                                           char **err_ptr);
 
 /**
@@ -382,40 +389,43 @@ uint32_t Engine_new(struct Engine **engine, char **err_ptr);
 
 /**
  * Frees memory used by a Engine instance
- * #meta: for_struct;free;
+ * #meta: for_struct;destructor;void;
  * #meta_param: engine;this;
  */
 void Engine_free(struct Engine *engine);
 
 /**
  * Frees memory used by an OAuthManagerPKCE instance
- * #meta: for_struct;free;
+ * #meta: for_struct;destructor;void;
  * #meta_param: mgr;this;
  */
 void OAuth2PKCE_free(struct OAuth2PKCE *mgr);
 
 /**
  * Frees memory used by an OAuthManagerAuthorization instance
- * #meta: for_struct;free;
+ * #meta: for_struct;destructor;void;
  * #meta_param: mgr;this;
  */
 void OAuth2Authorization_free(struct OAuth2Authorization *mgr);
 
 /**
  * Frees memory used by an OAuthManagerClientCredentials instance
- * #meta: for_struct;free;
+ * #meta: for_struct;destructor;void;
  * #meta_param: mgr;this;
  */
 void OAuth2ClientCredentials_free(struct OAuth2ClientCredentials *mgr);
 
 /**
  * Frees memory used by an OAuthManagerImplicit instance
- * #meta: for_struct;free;
+ * #meta: for_struct;destructor;void;
  * #meta_param: mgr;this;
  */
 void OAuth2Implicit_free(struct OAuth2Implicit *mgr);
 
 /**
- * Function to test deserialization of strings across FFI boundaries
+ * Sets the HTML page to use when the automatic token acquisition flow is used
+ * #meta: throws;
+ * #meta_param: html_succeess_page_str;string;
+ * #meta_param: err_ptr;error;
  */
-struct FFIArray *TestGetRustStringList(void);
+uint32_t set_html_status_success_page(const char *html_succeess_page_str, char **err_ptr);

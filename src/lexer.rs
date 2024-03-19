@@ -1,6 +1,7 @@
 use std::{fmt, iter::Peekable, slice::Iter};
 
 use fancy_regex::Regex;
+use lang_c::ast::Identifier;
 use serde::Serialize;
 
 use crate::meta::MetaValue;
@@ -8,11 +9,20 @@ use crate::meta::MetaValue;
 const KEYWORD_STRUCT: &str = "struct";
 const KEYWORD_TYPEDEF: &str = "typedef";
 const KEYWORD_CONST: &str = "const";
-const KEYWORD_INCLUDE: &str = "include";
-const KEYWORD_DEFINE: &str = "define";
 const KEYWORD_ENUM: &str = "enum";
 const KEYWORD_CHAR: &str = "char";
 const KEYWORD_VOID: &str = "void";
+const KEYWORD_PREPOCESSOR_INCLUDE: &str = "include";
+const KEYWORD_PREPOCESSOR_DEFINE: &str = "define";
+const KEYWORD_PREPOCESSOR_UNDEF: &str = "undef";
+const KEYWORD_PREPROCESSOR_DEFINED: &str = "defined";
+const KEYWORD_PREPOCESSOR_IF: &str = "if";
+const KEYWORD_PREPOCESSOR_ELSE: &str = "else";
+const KEYWORD_PREPOCESSOR_ELIF: &str = "elif";
+const KEYWORD_PREPOCESSOR_END_IF: &str = "endif";
+const KEYWORD_PREPOCESSOR_ERROR: &str = "error";
+const KEYWORD_PREPOCESSOR_IFDEF: &str = "ifdef";
+const KEYWORD_PREPOCESSOR_IFNDEF: &str = "ifndef";
 
 pub struct HeaderFile {
     pub includes: Vec<String>,
@@ -145,6 +155,7 @@ pub fn parse(tokens: Vec<ClangTokenType>) -> Result<HeaderFile, String> {
                     // println!("{}", ctypes[ctypes.len() - 1]);
                 }
             }
+            ClangTokenType::Hash => parse_preprocessor(&mut iter, &mut ctypes)?,
             ClangTokenType::NumericConstant(_) => todo!(),
             ClangTokenType::Comma => todo!(),
             ClangTokenType::RBrace => todo!(),
@@ -158,28 +169,78 @@ pub fn parse(tokens: Vec<ClangTokenType>) -> Result<HeaderFile, String> {
             ClangTokenType::Star => todo!(),
             ClangTokenType::Greater => todo!(),
             ClangTokenType::Less => todo!(),
-            ClangTokenType::Hash => {
-                consume_token(iter, ClangTokenType::Hash, false);
-                let next = iter.next();
-                if let None = next {
-                    return Err("Invalid final token: #".to_owned());
-                }
-                match next.unwrap() {
-                    ClangTokenType::RawIdentifier(val) => {
-                        if val == KEYWORD_INCLUDE {
-                            ctypes.push(parse_include(&mut iter)?);
-                        } else if val == KEYWORD_DEFINE {
-                            ctypes.push(parse_define(&mut iter)?);
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            ClangTokenType::Bang => todo!(),
             ClangTokenType::Minus => todo!(),
             ClangTokenType::Plus => todo!(),
         }
     }
     return Ok(HeaderFile::from(ctypes));
+}
+
+fn parse_preprocessor(
+    iter: &mut Peekable<Iter<ClangTokenType>>,
+    ctypes: &mut Vec<CType>,
+) -> Result<(), String> {
+    consume_token(iter, ClangTokenType::Hash, false);
+    let next = iter.next();
+    if let None = next {
+        return Err("Invalid final token: #".to_owned());
+    }
+    match next.unwrap() {
+        ClangTokenType::RawIdentifier(val) => {
+            if val == KEYWORD_PREPOCESSOR_INCLUDE {
+                ctypes.push(parse_preprocessor_include(iter)?);
+            } else if val == KEYWORD_PREPOCESSOR_DEFINE {
+                ctypes.push(parse_preprocessor_define(iter)?);
+            } else if val == KEYWORD_PREPOCESSOR_IF {
+                consume_whitespace(iter);
+                match iter.next() {
+                    Some(ClangTokenType::RawIdentifier(identifier)) => {
+                        if identifier == KEYWORD_PREPROCESSOR_DEFINED {
+                            consume_until(iter, ClangTokenType::LParen);
+                            if let Some(ClangTokenType::RawIdentifier(raw)) = iter.next() {
+                                /* check if this value is defined in the previous set of items, and also check that its not 0 (== true) */
+                                if !check_ifdef(&ctypes, raw) {
+                                    /* skip until the closing #ifdef */
+                                    consume_until(iter, ClangTokenType::Hash);
+                                    consume_token(
+                                        iter,
+                                        ClangTokenType::RawIdentifier(
+                                            KEYWORD_PREPOCESSOR_END_IF.into(),
+                                        ),
+                                        true,
+                                    );
+                                } else {
+                                    /* consume whitespace + next rparen and then continue */
+                                    consume_whitespace(iter);
+                                    consume_token(iter, ClangTokenType::RParen, false);
+                                }
+                            }
+                        } else if identifier == KEYWORD_PREPOCESSOR_IFNDEF {
+                            consume_until(iter, ClangTokenType::LParen);
+                            if let Some(ClangTokenType::RawIdentifier(raw)) = iter.next() {
+                                if !check_ifndef(&ctypes, raw) {
+                                    /* skip until the closing #ifdef */
+                                    consume_until(iter, ClangTokenType::Hash);
+                                }
+                            }
+                        }
+                    }
+                    Some(ClangTokenType::Bang) => {
+                        todo!("#if !defined() is NYI for clang2src");
+                    }
+                    Some(_) => {}
+                    None => {
+                        return Err(
+                            "Invalid token following #if statement, termination encountered".into(),
+                        )
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn parse_type(
@@ -544,7 +605,7 @@ fn parse_function(
             }
             _ => {
                 let param = parse_function_parameter(iter, &comment)?;
-                if matches!(param.variable_type.kind, CType::Void) {
+                if let CType::Void = param.variable_type.kind {
                     parameters.clear();
                 } else {
                     parameters.push(param);
@@ -599,7 +660,10 @@ fn parse_function_parameter(
                     });
                 }
                 let peek = iter.peek().unwrap();
-                if matches!(peek, ClangTokenType::Comma | ClangTokenType::RParen) {
+                if (std::mem::discriminant(&ClangTokenType::Comma) == std::mem::discriminant(peek))
+                    || (std::mem::discriminant(&ClangTokenType::RParen)
+                        == std::mem::discriminant(peek))
+                {
                     /* this is the label  */
                     label = val;
                 } else if val == KEYWORD_CONST {
@@ -636,7 +700,7 @@ fn parse_function_parameter(
     Err("function parameter: Failed to parse variable member".to_owned())
 }
 
-fn parse_define(iter: &mut Peekable<Iter<ClangTokenType>>) -> Result<CType, String> {
+fn parse_preprocessor_define(iter: &mut Peekable<Iter<ClangTokenType>>) -> Result<CType, String> {
     let mut label: &str = "";
     let mut is_negative: bool = false;
     let mut ctype: CType = CType::UNINITIALIZED;
@@ -675,7 +739,11 @@ fn parse_define(iter: &mut Peekable<Iter<ClangTokenType>>) -> Result<CType, Stri
     return Ok(CType::Define(label.to_owned(), Box::new(ctype)));
 }
 
-fn parse_include(iter: &mut Peekable<Iter<ClangTokenType>>) -> Result<CType, String> {
+fn parse_preprocessor_if(iter: &mut Peekable<Iter<ClangTokenType>>) -> Result<CType, String> {
+    Err("Invalid preprocessor if".into())
+}
+
+fn parse_preprocessor_include(iter: &mut Peekable<Iter<ClangTokenType>>) -> Result<CType, String> {
     let mut label: Vec<&str> = vec![];
     let mut is_open: bool = false;
     while let Some(token) = iter.next() {
@@ -716,7 +784,7 @@ fn parse_include(iter: &mut Peekable<Iter<ClangTokenType>>) -> Result<CType, Str
 
 fn consume_until(iter: &mut Peekable<Iter<ClangTokenType>>, _until: ClangTokenType) {
     while let Some(token) = iter.next() {
-        if matches!(token, _until) {
+        if std::mem::discriminant(token) == std::mem::discriminant(&_until) {
             return;
         }
     }
@@ -747,20 +815,95 @@ fn consume_whitespace<'a>(
 fn consume_token<'a>(
     iter: &'a mut Peekable<Iter<ClangTokenType>>,
     token: ClangTokenType,
-    _inner_required: bool,
+    inner_required: bool,
 ) -> &'a ClangTokenType {
     if let Some(t) = iter.next() {
         if std::mem::discriminant(t) == std::mem::discriminant(&token) {
-            // if inner_required {
-            //     if let ClangTokenType::RawIdentifier(val) = t {
-            //         return val == token.
-            //     }
-            // } else {
-            return t;
-            // }
+            if inner_required {
+                match t {
+                    ClangTokenType::Unknown(val) => {
+                        if let ClangTokenType::Unknown(inner) = token {
+                            if &inner == val {
+                                return t;
+                            }
+                        }
+                    }
+                    ClangTokenType::Comment(val) => {
+                        if let ClangTokenType::Comment(inner) = token {
+                            if &inner == val {
+                                return t;
+                            }
+                        }
+                    }
+                    ClangTokenType::RawIdentifier(val) => {
+                        if let ClangTokenType::RawIdentifier(inner) = token {
+                            if &inner == val {
+                                return t;
+                            }
+                        }
+                    }
+                    ClangTokenType::NumericConstant(val) => {
+                        if let ClangTokenType::NumericConstant(inner) = token {
+                            if &inner == val {
+                                return t;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                return t;
+            }
         }
     }
     panic!("Expected a type of token but got something else");
+}
+
+/// Given an identifier, checks the CTypes list to see if a `#define $identifier` exists, and is != 0 (i.e., is true).
+fn check_ifdef(ctypes: &Vec<CType>, identifier: &str) -> bool {
+    !ctypes.iter().all(|x| match x {
+        CType::Define(found_id, found_type) => {
+            if found_id == identifier {
+                match *(found_type.clone()) {
+                    CType::Char(v) => {
+                        if let Some(l) = v.as_bytes().first() {
+                            l != &0
+                        } else {
+                            false
+                        }
+                    }
+                    CType::SignedShort(v) => v == 0,
+                    CType::UnsignedShort(v) => v == 0,
+                    CType::SignedInteger(v) => v == 0,
+                    CType::UnsignedInteger(v) => v == 0,
+                    CType::SignedLong(v) => v == 0,
+                    CType::UnsignedLong(v) => v == 0,
+                    CType::Int64T(v) => v == 0,
+                    CType::Float(v) => v == 0.0,
+                    CType::Double(v) => v == 0.0,
+                    CType::DoubleDouble(v) => v == 0.0,
+                    CType::IntPtrT(v) => v == 0,
+                    CType::UIntPtrT(v) => v == 0,
+                    CType::Int8T(v) => v == 0,
+                    CType::Int16T(v) => v == 0,
+                    CType::Int32T(v) => v == 0,
+                    CType::UInt8T(v) => v == 0,
+                    CType::UInt16T(v) => v == 0,
+                    CType::UInt32T(v) => v == 0,
+                    CType::UInt64T(v) => v == 0,
+                    _ => true,
+                }
+            } else {
+                true
+            }
+        }
+        _ => true,
+    })
+}
+
+/// Given an identifier, checks the CTypes list to see if a `#define $identifier` doesn't exist, or if it does, if it is == 0 (i.e., is false).
+fn check_ifndef(ctypes: &Vec<CType>, identifier: &str) -> bool {
+    !check_ifdef(ctypes, identifier)
 }
 
 #[derive(Debug, PartialEq)]
@@ -803,6 +946,8 @@ pub enum ClangTokenType {
     Minus,
     /// +
     Plus,
+    /// !
+    Bang,
 }
 impl fmt::Display for ClangTokenType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -811,21 +956,22 @@ impl fmt::Display for ClangTokenType {
             ClangTokenType::Comment(val) => format!("{}", val),
             ClangTokenType::RawIdentifier(val) => format!("{}", val),
             ClangTokenType::NumericConstant(val) => format!("{}", val),
-            ClangTokenType::Comma => ",".to_owned(),
-            ClangTokenType::RBrace => "{".to_owned(),
-            ClangTokenType::LBrace => "}".to_owned(),
-            ClangTokenType::RParen => "(".to_owned(),
-            ClangTokenType::LParen => ")".to_owned(),
-            ClangTokenType::LSquare => "[".to_owned(),
-            ClangTokenType::RSquare => "]".to_owned(),
-            ClangTokenType::Semi => ";".to_owned(),
-            ClangTokenType::Period => ".".to_owned(),
-            ClangTokenType::Star => "*".to_owned(),
-            ClangTokenType::Greater => ">".to_owned(),
-            ClangTokenType::Less => "<".to_owned(),
-            ClangTokenType::Hash => "#".to_owned(),
-            ClangTokenType::Minus => "-".to_owned(),
-            ClangTokenType::Plus => "+".to_owned(),
+            ClangTokenType::Comma => String::from(","),
+            ClangTokenType::RBrace => String::from("{"),
+            ClangTokenType::LBrace => String::from("}"),
+            ClangTokenType::RParen => String::from("("),
+            ClangTokenType::LParen => String::from(")"),
+            ClangTokenType::LSquare => String::from("["),
+            ClangTokenType::RSquare => String::from("]"),
+            ClangTokenType::Semi => String::from(";"),
+            ClangTokenType::Period => String::from("."),
+            ClangTokenType::Star => String::from("*"),
+            ClangTokenType::Greater => String::from(">"),
+            ClangTokenType::Less => String::from("<"),
+            ClangTokenType::Hash => String::from("#"),
+            ClangTokenType::Minus => String::from("-"),
+            ClangTokenType::Plus => String::from("+"),
+            ClangTokenType::Bang => String::from("!"),
         };
         write!(f, "{}", s)
     }
@@ -879,33 +1025,33 @@ impl fmt::Display for CType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match &self {
             CType::Enum(v) => v.to_string(),
-            CType::Include(v) => format!("include {}", v).to_owned(),
+            CType::Include(v) => format!("include {}", v).into(),
             CType::Define(label, value) => format!("{} = {}", label, value),
-            CType::SignedShort(v) => format!("signed short {}", v).to_owned(),
-            CType::UnsignedShort(v) => format!("unsigned short {}", v).to_owned(),
-            CType::SignedInteger(v) => format!("signed int {}", v).to_owned(),
-            CType::UnsignedInteger(v) => format!("unsigned int {}", v).to_owned(),
-            CType::SignedLong(v) => format!("signed long {}", v).to_owned(),
-            CType::UnsignedLong(v) => format!("unsigned long {}", v).to_owned(),
-            CType::Int64T(v) => format!("int64_t {}", v).to_owned(),
-            CType::Float(v) => format!("float {}", v).to_owned(),
-            CType::Double(v) => format!("double {}", v).to_owned(),
-            CType::DoubleDouble(v) => format!("double double {}", v).to_owned(),
-            CType::Char(v) => format!("char {}", v).to_owned(),
-            CType::Struct(v) => format!("{}", v).to_owned(),
-            CType::Function(v) => format!("{}", v).to_owned(),
-            CType::IntPtrT(_) => "intptr_t".to_owned(),
-            CType::UIntPtrT(_) => "uintptr_t".to_owned(),
-            CType::Int8T(_) => "byte_t".to_owned(),
-            CType::Int16T(_) => "int16_t".to_owned(),
-            CType::Int32T(_) => "int32_t".to_owned(),
-            CType::UInt8T(_) => "uint8_t".to_owned(),
-            CType::UInt16T(_) => "uint16_t".to_owned(),
-            CType::UInt32T(_) => "uint32_t".to_owned(),
-            CType::UInt64T(_) => "uint64_t".to_owned(),
-            CType::VoidStar => "void *".to_owned(),
-            CType::Void => "void".to_owned(),
-            CType::UNINITIALIZED => "ERROR VALUE".to_owned(),
+            CType::SignedShort(v) => format!("signed short {}", v).into(),
+            CType::UnsignedShort(v) => format!("unsigned short {}", v).into(),
+            CType::SignedInteger(v) => format!("signed int {}", v).into(),
+            CType::UnsignedInteger(v) => format!("unsigned int {}", v).into(),
+            CType::SignedLong(v) => format!("signed long {}", v).into(),
+            CType::UnsignedLong(v) => format!("unsigned long {}", v).into(),
+            CType::Int64T(v) => format!("int64_t {}", v).into(),
+            CType::Float(v) => format!("float {}", v).into(),
+            CType::Double(v) => format!("double {}", v).into(),
+            CType::DoubleDouble(v) => format!("double double {}", v).into(),
+            CType::Char(v) => format!("char {}", v).into(),
+            CType::Struct(v) => format!("{}", v).into(),
+            CType::Function(v) => format!("{}", v).into(),
+            CType::IntPtrT(_) => String::from("intptr_t"),
+            CType::UIntPtrT(_) => String::from("uintptr_t"),
+            CType::Int8T(_) => String::from("byte_t"),
+            CType::Int16T(_) => String::from("int16_t"),
+            CType::Int32T(_) => String::from("int32_t"),
+            CType::UInt8T(_) => String::from("uint8_t"),
+            CType::UInt16T(_) => String::from("uint16_t"),
+            CType::UInt32T(_) => String::from("uint32_t"),
+            CType::UInt64T(_) => String::from("uint64_t"),
+            CType::VoidStar => String::from("void *"),
+            CType::Void => String::from("void"),
+            CType::UNINITIALIZED => String::from("ERROR VALUE"),
         };
         write!(f, "{}", s)
     }
